@@ -135,6 +135,48 @@ app.get("/api/plans", (_req, res) => {
   res.json({ plans: [] });
 });
 
+// GitHub repos stub (local mode uses scanner, not GitHub)
+app.get("/api/projects/github-repos", (_req, res) => {
+  res.json({ repos: [] });
+});
+
+// Analytics stubs
+app.get("/api/analytics/agents", (_req, res) => {
+  res.json({ agents: [] });
+});
+app.get("/api/analytics/trends", (_req, res) => {
+  res.json({ trends: [] });
+});
+app.get("/api/analytics/summary", (_req, res) => {
+  res.json({ totalCostUsd: 0, totalTokens: 0, completedTasks: 0, failedTasks: 0, costBreakdown: [] });
+});
+app.get("/api/analytics/costs", (_req, res) => {
+  res.json({ costs: [] });
+});
+
+// Messages stub
+app.get("/api/messages", (_req, res) => {
+  res.json({ messages: [] });
+});
+
+// Workflows stub
+app.get("/api/workflows", (_req, res) => {
+  res.json({ workflows: [] });
+});
+
+// Skills stub
+app.get("/api/skills", (_req, res) => {
+  res.json({ skills: [] });
+});
+
+// Agent skills/memories stubs
+app.get("/api/agents/:id/skills", (_req, res) => {
+  res.json({ skills: [] });
+});
+app.get("/api/agents/:id/memories", (_req, res) => {
+  res.json({ memories: [] });
+});
+
 // Available models
 app.get("/api/plans/models", (_req, res) => {
   res.json({ models: [
