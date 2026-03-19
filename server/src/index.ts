@@ -177,6 +177,37 @@ app.get("/api/agents/:id/memories", (_req, res) => {
   res.json({ memories: [] });
 });
 
+// Claude Code CLI usage — reads token and fetches from Anthropic API
+app.get("/api/claude-usage", async (_req, res) => {
+  try {
+    const token = getClaudeToken();
+    if (!token) {
+      return res.json({ error: "no_token", usage: null });
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    const apiRes = await fetch("https://api.anthropic.com/api/oauth/usage", {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "anthropic-beta": "oauth-2025-04-20",
+        "User-Agent": "agenthub-local/1.0.0",
+      },
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+
+    if (!apiRes.ok) {
+      return res.json({ error: `api_error_${apiRes.status}`, usage: null });
+    }
+
+    const usage = await apiRes.json();
+    res.json({ error: null, usage });
+  } catch (err) {
+    res.json({ error: "fetch_failed", usage: null });
+  }
+});
+
 // Available models
 app.get("/api/plans/models", (_req, res) => {
   res.json({ models: [
