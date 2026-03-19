@@ -140,9 +140,9 @@ app.get("/api/projects/github-repos", (_req, res) => {
   res.json({ repos: [] });
 });
 
-// Analytics stubs
+// Analytics stubs — must match frontend expected response shapes
 app.get("/api/analytics/agents", (_req, res) => {
-  res.json({ agents: [] });
+  res.json({ metrics: [] });
 });
 app.get("/api/analytics/trends", (_req, res) => {
   res.json({ trends: [] });
@@ -151,7 +151,7 @@ app.get("/api/analytics/summary", (_req, res) => {
   res.json({ totalCostUsd: 0, totalTokens: 0, completedTasks: 0, failedTasks: 0, costBreakdown: [] });
 });
 app.get("/api/analytics/costs", (_req, res) => {
-  res.json({ costs: [] });
+  res.json({ data: [] });
 });
 
 // Messages stub
