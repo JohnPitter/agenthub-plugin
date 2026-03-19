@@ -58,6 +58,49 @@ router.post("/scan", (req, res) => {
   res.json(found);
 });
 
+// POST /import — import a project (local path or GitHub-like format)
+router.post("/import", (req, res) => {
+  const { owner, repo, cloneUrl, htmlUrl, description } = req.body;
+  const localPath = cloneUrl || htmlUrl;
+  const name = repo || (localPath ? localPath.split("/").pop() : "unknown");
+
+  if (!localPath) {
+    res.status(400).json({ error: "cloneUrl or htmlUrl is required" });
+    return;
+  }
+
+  // Check duplicate
+  const existing = db.select().from(projects).where(eq(projects.path, localPath)).get();
+  if (existing) {
+    res.status(409).json({ error: "errorDuplicate", project: existing });
+    return;
+  }
+
+  // Detect stack from path
+  let stack: string[] = [];
+  try {
+    const found = scanWorkspace(localPath + "/..");
+    const match = found.find((p: { path: string }) => p.path === localPath || p.name === name);
+    if (match) stack = match.stack;
+  } catch { /* ignore */ }
+
+  const now = Date.now();
+  const project = {
+    id: nanoid(),
+    name,
+    path: localPath,
+    stack: JSON.stringify(stack),
+    description: description ?? null,
+    githubUrl: null,
+    status: "active",
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  db.insert(projects).values(project).run();
+  res.status(201).json({ project });
+});
+
 // GET /:id — get single project
 router.get("/:id", (req, res) => {
   const project = db.select().from(projects).where(eq(projects.id, req.params.id)).get();

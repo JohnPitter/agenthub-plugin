@@ -135,9 +135,56 @@ app.get("/api/plans", (_req, res) => {
   res.json({ plans: [] });
 });
 
-// GitHub repos stub (local mode uses scanner, not GitHub)
+// Local mode: scan common project directories and return in GitHub-repo format
 app.get("/api/projects/github-repos", (_req, res) => {
-  res.json({ repos: [] });
+  try {
+    const { scanWorkspace } = require("./lib/scanner.js");
+    const homePath = require("os").homedir();
+    const fs = require("fs");
+    const path = require("path");
+
+    // Scan common dev directories
+    const scanDirs = [
+      path.join(homePath, "Projects"),
+      path.join(homePath, "Desenvolvimento", "Projects"),
+      path.join(homePath, "Development"),
+      path.join(homePath, "dev"),
+      path.join(homePath, "repos"),
+      path.join(homePath, "workspace"),
+      path.join(homePath, "code"),
+      path.join(homePath, "src"),
+      path.join(homePath, "Desktop"),
+      path.join(homePath, "Documents"),
+    ].filter(d => fs.existsSync(d));
+
+    const allProjects: unknown[] = [];
+    const existingPaths = new Set(
+      db.select({ path: schema.projects.path }).from(schema.projects).all().map((p: { path: string }) => p.path)
+    );
+
+    for (const dir of scanDirs) {
+      try {
+        const found = scanWorkspace(dir);
+        for (const p of found) {
+          allProjects.push({
+            full_name: `local/${p.name}`,
+            name: p.name,
+            description: `${p.stack.join(", ")} — ${p.path}`,
+            html_url: p.path,
+            clone_url: p.path,
+            private: false,
+            language: p.stack[0] ?? null,
+            updated_at: new Date().toISOString(),
+            alreadyImported: existingPaths.has(p.path),
+          });
+        }
+      } catch { /* skip inaccessible dirs */ }
+    }
+
+    res.json({ repos: allProjects });
+  } catch (err) {
+    res.json({ repos: [] });
+  }
 });
 
 // Analytics stubs — must match frontend expected response shapes
