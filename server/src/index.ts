@@ -58,23 +58,43 @@ app.get("/api/auth/me", (_req, res) => {
   res.json({ id: "local", login: "local", name: "Local User", email: null, role: "admin", avatarUrl: null, githubId: 0 });
 });
 
-// Dashboard stats
+// Dashboard stats — all fields the frontend expects
 app.get("/api/dashboard/stats", (_req, res) => {
-  const [{ value: totalProjects }] = db.select({ value: count() }).from(schema.projects).all();
-  const [{ value: activeAgents }] = db.select({ value: count() }).from(schema.agents).where(eq(schema.agents.isActive, 1)).all();
-  const [{ value: totalTasks }] = db.select({ value: count() }).from(schema.tasks).all();
-  const [{ value: runningTasks }] = db.select({ value: count() }).from(schema.tasks).where(eq(schema.tasks.status, "in_progress")).all();
+  try {
+    const totalProjects = db.select({ value: count() }).from(schema.projects).all()[0]?.value ?? 0;
+    const activeAgents = db.select({ value: count() }).from(schema.agents).where(eq(schema.agents.isActive, 1)).all()[0]?.value ?? 0;
+    const totalTasks = db.select({ value: count() }).from(schema.tasks).all()[0]?.value ?? 0;
+    const runningTasks = db.select({ value: count() }).from(schema.tasks).where(eq(schema.tasks.status, "in_progress")).all()[0]?.value ?? 0;
+    const reviewTasks = db.select({ value: count() }).from(schema.tasks).where(eq(schema.tasks.status, "review")).all()[0]?.value ?? 0;
+    const doneTasks = db.select({ value: count() }).from(schema.tasks).where(eq(schema.tasks.status, "done")).all()[0]?.value ?? 0;
 
-  res.json({
-    totalProjects,
-    activeAgents,
-    totalTasks,
-    runningTasks,
-    completedTasks: 0,
-    failedTasks: 0,
-    totalCostUsd: "0",
-    totalTokensUsed: 0,
-  });
+    res.json({
+      totalProjects,
+      activeAgents,
+      totalTasks,
+      runningTasks,
+      reviewTasks,
+      doneTasks,
+      weeklyCreated: 0,
+      weeklyCompleted: 0,
+      weeklyFailed: 0,
+      projectStats: [],
+      recentCompletedTasks: [],
+      activityPage: 0,
+      activityPageSize: 10,
+      activityTotalCount: 0,
+      activityTotalPages: 0,
+      recentActivities: [],
+    });
+  } catch {
+    res.json({
+      totalProjects: 0, activeAgents: 0, totalTasks: 0, runningTasks: 0,
+      reviewTasks: 0, doneTasks: 0, weeklyCreated: 0, weeklyCompleted: 0,
+      weeklyFailed: 0, projectStats: [], recentCompletedTasks: [],
+      activityPage: 0, activityPageSize: 10, activityTotalCount: 0,
+      activityTotalPages: 0, recentActivities: [],
+    });
+  }
 });
 
 // Plan usage — unlimited for local
@@ -92,9 +112,27 @@ app.get("/api/admin/setup-status", (_req, res) => {
   res.json({ isSetupComplete: true, steps: { hasAdmin: true, hasApiKey: true, hasPlans: true } });
 });
 
-// Notifications — always 0 for local
+// Notifications stubs
 app.get("/api/notifications/unread-count", (_req, res) => {
   res.json({ count: 0 });
+});
+app.get("/api/notifications", (_req, res) => {
+  res.json({ notifications: [] });
+});
+
+// Teams stub
+app.get("/api/teams", (_req, res) => {
+  res.json({ teams: [] });
+});
+
+// Auth refresh stub
+app.post("/api/auth/refresh", (_req, res) => {
+  res.json({ ok: true });
+});
+
+// Plans list stub
+app.get("/api/plans", (_req, res) => {
+  res.json({ plans: [] });
 });
 
 // Available models
