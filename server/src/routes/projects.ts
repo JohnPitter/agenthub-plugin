@@ -3,6 +3,7 @@ import { db, projects } from "../db.js";
 import { eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { scanWorkspace } from "../lib/scanner.js";
+import { rmSync, existsSync } from "fs";
 
 const router: ReturnType<typeof Router> = Router();
 
@@ -117,6 +118,12 @@ router.delete("/:id", (req, res) => {
   if (!project) {
     res.status(404).json({ error: "project not found" });
     return;
+  }
+  // Delete files from disk
+  if (project.path && existsSync(project.path)) {
+    try {
+      rmSync(project.path, { recursive: true, force: true });
+    } catch { /* best-effort */ }
   }
   db.delete(projects).where(eq(projects.id, req.params.id)).run();
   res.json({ success: true });

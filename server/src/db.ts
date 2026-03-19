@@ -33,6 +33,11 @@ export const agents = sqliteTable("agents", {
   systemPrompt: text("system_prompt").notNull(),
   description: text("description").default(""),
   allowedTools: text("allowed_tools"),
+  permissionMode: text("permission_mode").default("default"),
+  level: text("level").default("senior"),
+  color: text("color"),
+  avatar: text("avatar"),
+  soul: text("soul"),
   isActive: integer("is_active").notNull().default(1),
   isDefault: integer("is_default").notNull().default(0),
   createdAt: integer("created_at").notNull(),
@@ -76,6 +81,37 @@ export const messages = sqliteTable("messages", {
   createdAt: integer("created_at").notNull(),
 });
 
+export const agentMemories = sqliteTable("agent_memories", {
+  id: text("id").primaryKey(),
+  agentId: text("agent_id").notNull(),
+  taskId: text("task_id"),
+  type: text("type").notNull().default("learning"), // learning | correction | pattern | context
+  content: text("content").notNull(),
+  source: text("source"), // task execution, user feedback, self-reflection
+  createdAt: integer("created_at").notNull(),
+});
+
+export const docs = sqliteTable("docs", {
+  id: text("id").primaryKey(),
+  title: text("title").notNull(),
+  content: text("content").default(""),
+  category: text("category"),
+  pinned: integer("pinned").notNull().default(0),
+  parentId: text("parent_id"),
+  order: integer("order").notNull().default(0),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+export const integrations = sqliteTable("integrations", {
+  id: text("id").primaryKey(),
+  type: text("type").notNull(), // whatsapp | telegram
+  status: text("status").notNull().default("disconnected"),
+  config: text("config"), // JSON: { allowedNumber }
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+});
+
 // Database connection
 const sqlite = new Database(DB_PATH);
 sqlite.pragma("journal_mode = WAL");
@@ -94,6 +130,8 @@ const DDL = `
     model TEXT NOT NULL DEFAULT 'claude-sonnet-4-5-20250929',
     max_thinking_tokens INTEGER, system_prompt TEXT NOT NULL,
     description TEXT DEFAULT '', allowed_tools TEXT,
+    permission_mode TEXT DEFAULT 'default', level TEXT DEFAULT 'senior',
+    color TEXT, avatar TEXT, soul TEXT,
     is_active INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
   );
@@ -118,12 +156,42 @@ const DDL = `
   CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
   CREATE INDEX IF NOT EXISTS idx_task_logs_task ON task_logs(task_id);
   CREATE INDEX IF NOT EXISTS idx_messages_project ON messages(project_id);
+  CREATE TABLE IF NOT EXISTS integrations (
+    id TEXT PRIMARY KEY, type TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'disconnected',
+    config TEXT,
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS agent_memories (
+    id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, task_id TEXT,
+    type TEXT NOT NULL DEFAULT 'learning', content TEXT NOT NULL,
+    source TEXT, created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_agent_memories_agent ON agent_memories(agent_id);
+  CREATE TABLE IF NOT EXISTS docs (
+    id TEXT PRIMARY KEY, title TEXT NOT NULL, content TEXT DEFAULT '',
+    category TEXT, pinned INTEGER NOT NULL DEFAULT 0,
+    parent_id TEXT, "order" INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+  );
 `;
 
 for (const stmt of DDL.split(";").filter(s => s.trim())) {
   sqlite.prepare(stmt + ";").run();
 }
 
-export const schema = { projects, agents, tasks, taskLogs, messages };
+// Migrations — add new columns to existing tables (safe: IF NOT EXISTS via try/catch)
+const MIGRATIONS = [
+  "ALTER TABLE agents ADD COLUMN permission_mode TEXT DEFAULT 'default'",
+  "ALTER TABLE agents ADD COLUMN level TEXT DEFAULT 'senior'",
+  "ALTER TABLE agents ADD COLUMN color TEXT",
+  "ALTER TABLE agents ADD COLUMN avatar TEXT",
+  "ALTER TABLE agents ADD COLUMN soul TEXT",
+];
+for (const migration of MIGRATIONS) {
+  try { sqlite.prepare(migration).run(); } catch { /* column already exists */ }
+}
+
+export const schema = { projects, agents, tasks, taskLogs, messages, integrations, agentMemories, docs };
 export const db = drizzle(sqlite, { schema });
 export { DATA_DIR };

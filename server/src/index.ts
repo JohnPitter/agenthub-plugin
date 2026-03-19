@@ -5,7 +5,8 @@ import { Server as SocketServer } from "socket.io";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import open from "open";
-import { writeFileSync, existsSync, mkdirSync } from "fs";
+import { writeFileSync, readFileSync, existsSync, mkdirSync } from "fs";
+import { execFileSync } from "child_process";
 import { homedir } from "os";
 import { nanoid } from "nanoid";
 
@@ -13,11 +14,19 @@ import projectsRouter from "./routes/projects.js";
 import tasksRouter from "./routes/tasks.js";
 import agentsRouter from "./routes/agents.js";
 import filesRouter from "./routes/files.js";
+import integrationsRouter from "./routes/integrations.js";
 import { seedAgents } from "./seed.js";
 import { getClaudeToken } from "./lib/claude-token.js";
 import { scanWorkspace } from "./lib/scanner.js";
 import { db, schema, DATA_DIR } from "./db.js";
 import { count, eq } from "drizzle-orm";
+
+// Ensure default projects directory exists on first run
+const DEFAULT_PROJECTS_DIR = join(homedir(), "Projects");
+if (!existsSync(DEFAULT_PROJECTS_DIR)) {
+  mkdirSync(DEFAULT_PROJECTS_DIR, { recursive: true });
+  console.log(`Created default projects directory: ${DEFAULT_PROJECTS_DIR}`);
+}
 
 // Use port 0 to let the OS assign a random available port
 const PREFERRED_PORT = parseInt(process.env.PORT ?? "0", 10);
@@ -26,6 +35,13 @@ const app = express();
 // Middleware
 app.use(cors({ origin: true }));
 app.use(express.json({ limit: "1mb" }));
+
+// Cross-Origin Isolation headers required by WebContainer
+app.use((_req, res, next) => {
+  res.setHeader("Cross-Origin-Embedder-Policy", "credentialless");
+  res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+  next();
+});
 
 // Request logging
 app.use((req, _res, next) => {
@@ -40,7 +56,7 @@ app.use((req, _res, next) => {
 });
 
 // GitHub repos — must be before projectsRouter (which has /:id catch-all)
-app.get("/api/projects/github-repos", (_req, res) => {
+app.get("/api/projects/local-scan", (_req, res) => {
   try {
     const homePath = homedir();
     const scanDirs = [
@@ -127,7 +143,7 @@ app.post("/api/projects/import", (req, res) => {
 
 // Create project — local mode: creates folder with template
 app.post("/api/projects/create", async (req, res) => {
-  const { name, description, isPrivate } = req.body;
+  const { name, description, isPrivate, stack } = req.body;
   if (!name?.trim()) {
     return res.status(400).json({ error: "errorNameRequired" });
   }
@@ -154,10 +170,9 @@ app.post("/api/projects/create", async (req, res) => {
 
   // Git init (best-effort)
   try {
-    const cp = await import("child_process");
-    cp.execFileSync("git", ["init"], { cwd: projectPath, timeout: 5000 });
-    cp.execFileSync("git", ["add", "."], { cwd: projectPath, timeout: 5000 });
-    cp.execFileSync("git", ["commit", "-m", "Initial commit"], { cwd: projectPath, timeout: 5000 });
+    execFileSync("git", ["init"], { cwd: projectPath, timeout: 5000 });
+    execFileSync("git", ["add", "."], { cwd: projectPath, timeout: 5000 });
+    execFileSync("git", ["commit", "-m", "Initial commit"], { cwd: projectPath, timeout: 5000 });
   } catch { /* optional */ }
 
   const now = Date.now();
@@ -165,7 +180,7 @@ app.post("/api/projects/create", async (req, res) => {
     id: nanoid(),
     name: name.trim(),
     path: projectPath,
-    stack: JSON.stringify(["nodejs"]),
+    stack: JSON.stringify(Array.isArray(stack) && stack.length > 0 ? stack : ["nodejs"]),
     description: description?.trim() || null,
     githubUrl: null,
     status: "active",
@@ -177,11 +192,110 @@ app.post("/api/projects/create", async (req, res) => {
   res.status(201).json({ project });
 });
 
+// Git routes — before projectsRouter to avoid /:id catch-all
+app.get("/api/projects/:id/git/status", (req, res) => {
+  const project = db.select().from(schema.projects).where(eq(schema.projects.id, req.params.id)).get();
+  if (!project) return res.status(404).json({ error: "not found" });
+
+
+  const isGitRepo = existsSync(join(project.path, ".git"));
+  if (!isGitRepo) return res.json({ isGitRepo: false, status: null, lastCommit: null, remoteStatus: null });
+
+  try {
+    const branch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: project.path, timeout: 5000 }).toString().trim();
+    const statusOut = execFileSync("git", ["status", "--porcelain"], { cwd: project.path, timeout: 5000 }).toString();
+    const lines = statusOut.split("\n").filter(Boolean);
+    const staged = lines.filter((l: string) => /^[MADRC]/.test(l)).map((l: string) => l.slice(3));
+    const unstaged = lines.filter((l: string) => /^.[MADRC]/.test(l)).map((l: string) => l.slice(3));
+    const untracked = lines.filter((l: string) => l.startsWith("??")).map((l: string) => l.slice(3));
+
+    let lastCommit = null;
+    try {
+      const log = execFileSync("git", ["log", "-1", "--format=%H%n%s%n%an%n%aI"], { cwd: project.path, timeout: 5000 }).toString().trim().split("\n");
+      lastCommit = { sha: log[0], message: log[1], author: log[2], date: log[3] };
+    } catch { /* no commits */ }
+
+    let remoteStatus = null;
+    let ahead = 0, behind = 0;
+    try {
+      const remoteUrl = execFileSync("git", ["config", "--get", "remote.origin.url"], { cwd: project.path, timeout: 5000 }).toString().trim();
+      const counts = execFileSync("git", ["rev-list", "--left-right", "--count", `HEAD...origin/${branch}`], { cwd: project.path, timeout: 5000 }).toString().trim().split("\t");
+      ahead = parseInt(counts[0]) || 0;
+      behind = parseInt(counts[1]) || 0;
+      remoteStatus = { remoteUrl, ahead, behind };
+    } catch { /* no remote */ }
+
+    res.json({ isGitRepo: true, status: { branch, staged, unstaged, untracked, ahead, behind }, lastCommit, remoteStatus });
+  } catch {
+    res.json({ isGitRepo: true, status: { branch: "unknown", staged: [], unstaged: [], untracked: [], ahead: 0, behind: 0 }, lastCommit: null, remoteStatus: null });
+  }
+});
+
+app.get("/api/projects/:id/git/config", (req, res) => {
+  const project = db.select().from(schema.projects).where(eq(schema.projects.id, req.params.id)).get();
+  if (!project) return res.status(404).json({ error: "not found" });
+
+
+  let remoteUrl = "";
+  let defaultBranch = "main";
+  try {
+    remoteUrl = execFileSync("git", ["config", "--get", "remote.origin.url"], { cwd: project.path, timeout: 5000 }).toString().trim();
+  } catch { /* no remote */ }
+  try {
+    defaultBranch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: project.path, timeout: 5000 }).toString().trim();
+  } catch { /* ignore */ }
+  res.json({ remoteUrl, defaultBranch });
+});
+
+app.put("/api/projects/:id/git/config", (req, res) => {
+  const project = db.select().from(schema.projects).where(eq(schema.projects.id, req.params.id)).get();
+  if (!project) return res.status(404).json({ error: "not found" });
+
+  const { remoteUrl } = req.body;
+
+  try {
+    if (remoteUrl) {
+      try { execFileSync("git", ["remote", "add", "origin", remoteUrl], { cwd: project.path, timeout: 5000 }); } catch {
+        execFileSync("git", ["remote", "set-url", "origin", remoteUrl], { cwd: project.path, timeout: 5000 });
+      }
+    }
+    res.json({ success: true });
+  } catch { res.status(500).json({ error: "failed to update config" }); }
+});
+
+app.post("/api/projects/:id/git/init", (req, res) => {
+  const project = db.select().from(schema.projects).where(eq(schema.projects.id, req.params.id)).get();
+  if (!project) return res.status(404).json({ error: "not found" });
+
+
+  try {
+    execFileSync("git", ["init"], { cwd: project.path, timeout: 5000 });
+    execFileSync("git", ["add", "."], { cwd: project.path, timeout: 5000 });
+    execFileSync("git", ["commit", "-m", "Initial commit"], { cwd: project.path, timeout: 5000 });
+    res.json({ success: true });
+  } catch { res.status(500).json({ error: "failed to init repo" }); }
+});
+
+app.post("/api/projects/:id/git/sync", (req, res) => {
+  const project = db.select().from(schema.projects).where(eq(schema.projects.id, req.params.id)).get();
+  if (!project) return res.status(404).json({ error: "not found" });
+
+
+  try {
+    execFileSync("git", ["pull", "--rebase"], { cwd: project.path, timeout: 60000 });
+    execFileSync("git", ["push"], { cwd: project.path, timeout: 60000 });
+    res.json({ success: true, conflicts: false });
+  } catch {
+    res.json({ success: false, conflicts: true });
+  }
+});
+
 // API routes
 app.use("/api/projects", projectsRouter);
 app.use("/api/tasks", tasksRouter);
 app.use("/api/agents", agentsRouter);
 app.use("/api", filesRouter);
+app.use("/api", integrationsRouter);
 
 // Health check
 app.get("/api/health", (_req, res) => {
@@ -192,6 +306,23 @@ app.get("/api/health", (_req, res) => {
     claudeToken: hasToken ? "found" : "not_found",
     uptime: process.uptime(),
   });
+});
+
+// Claude login — opens browser-based OAuth flow
+app.post("/api/auth/claude-login", async (_req, res) => {
+  try {
+    // claude login opens the browser for OAuth — non-blocking
+    const cp = await import("child_process");
+    cp.execFile("claude", ["login"], { timeout: 120000 }, (err) => {
+      if (!err) {
+        const socketIo = _req.app.get("io");
+        if (socketIo) socketIo.emit("auth:refreshed", { message: "Login successful" });
+      }
+    });
+    res.json({ status: "login_started", message: "Claude login opened in browser" });
+  } catch {
+    res.status(500).json({ error: "failed to start login" });
+  }
 });
 
 // Fake auth endpoint for local mode
@@ -209,6 +340,26 @@ app.get("/api/dashboard/stats", (_req, res) => {
     const reviewTasks = db.select({ value: count() }).from(schema.tasks).where(eq(schema.tasks.status, "review")).all()[0]?.value ?? 0;
     const doneTasks = db.select({ value: count() }).from(schema.tasks).where(eq(schema.tasks.status, "done")).all()[0]?.value ?? 0;
 
+    // Build per-project stats
+    const allProjects = db.select({ id: schema.projects.id }).from(schema.projects).all();
+    const activeAgentsList = db.select({
+      id: schema.agents.id,
+      name: schema.agents.name,
+      avatar: schema.agents.avatar,
+      color: schema.agents.color,
+    }).from(schema.agents).where(eq(schema.agents.isActive, 1)).all();
+
+    const projectStats = allProjects.map((p) => {
+      const taskCount = db.select({ value: count() }).from(schema.tasks)
+        .where(eq(schema.tasks.projectId, p.id)).all()[0]?.value ?? 0;
+      return {
+        projectId: p.id,
+        taskCount,
+        agentCount: activeAgentsList.length,
+        agents: activeAgentsList,
+      };
+    });
+
     res.json({
       totalProjects,
       activeAgents,
@@ -219,7 +370,7 @@ app.get("/api/dashboard/stats", (_req, res) => {
       weeklyCreated: 0,
       weeklyCompleted: 0,
       weeklyFailed: 0,
-      projectStats: [],
+      projectStats,
       recentCompletedTasks: [],
       activityPage: 0,
       activityPageSize: 10,
@@ -241,6 +392,23 @@ app.get("/api/dashboard/stats", (_req, res) => {
 // Plan usage — unlimited for local
 app.get("/api/plans/my-usage", (_req, res) => {
   res.json({ plan: null, usage: { projects: 0, tasksThisMonth: 0 } });
+});
+
+// Factory reset — wipe all data except agents
+app.post("/api/admin/factory-reset", (_req, res) => {
+  try {
+    db.delete(schema.taskLogs).run();
+    db.delete(schema.messages).run();
+    db.delete(schema.tasks).run();
+    db.delete(schema.projects).run();
+    db.delete(schema.docs).run();
+    db.delete(schema.agentMemories).run();
+    db.delete(schema.integrations).run();
+
+    res.json({ success: true, message: "All data cleared. Agents preserved." });
+  } catch (err) {
+    res.status(500).json({ error: "Reset failed" });
+  }
 });
 
 // Storage usage — no limits for local
@@ -276,7 +444,7 @@ app.get("/api/plans", (_req, res) => {
   res.json({ plans: [] });
 });
 
-// (github-repos and import endpoints are defined above, before projectsRouter)
+// (local-scan and import endpoints are defined above, before projectsRouter)
 
 // Analytics stubs — must match frontend expected response shapes
 app.get("/api/analytics/agents", (_req, res) => {
@@ -289,7 +457,171 @@ app.get("/api/analytics/summary", (_req, res) => {
   res.json({ totalCostUsd: 0, totalTokens: 0, completedTasks: 0, failedTasks: 0, costBreakdown: [] });
 });
 app.get("/api/analytics/costs", (_req, res) => {
-  res.json({ data: [] });
+  res.json([]);
+});
+
+// Docs CRUD
+app.get("/api/docs", (_req, res) => {
+  const allDocs = db.select().from(schema.docs).all();
+  res.json({ docs: allDocs });
+});
+
+app.get("/api/docs/:docId", (req, res) => {
+  const doc = db.select().from(schema.docs).where(eq(schema.docs.id, req.params.docId)).get();
+  if (!doc) return res.status(404).json({ error: "not found" });
+  res.json({ doc });
+});
+
+app.post("/api/docs", (req, res) => {
+  const now = Date.now();
+  const doc = {
+    id: nanoid(),
+    title: req.body.title || "Untitled",
+    content: req.body.content || "",
+    category: req.body.category || null,
+    pinned: 0,
+    parentId: req.body.parentId || null,
+    order: 0,
+    createdAt: now,
+    updatedAt: now,
+  };
+  db.insert(schema.docs).values(doc).run();
+  res.status(201).json({ doc });
+});
+
+app.patch("/api/docs/:docId", (req, res) => {
+  const existing = db.select().from(schema.docs).where(eq(schema.docs.id, req.params.docId)).get();
+  if (!existing) return res.status(404).json({ error: "not found" });
+
+  const updates: Record<string, unknown> = { updatedAt: Date.now() };
+  if (req.body.title !== undefined) updates.title = req.body.title;
+  if (req.body.content !== undefined) updates.content = req.body.content;
+  if (req.body.category !== undefined) updates.category = req.body.category;
+  if (req.body.pinned !== undefined) updates.pinned = req.body.pinned ? 1 : 0;
+  if (req.body.parentId !== undefined) updates.parentId = req.body.parentId;
+  if (req.body.order !== undefined) updates.order = req.body.order;
+
+  db.update(schema.docs).set(updates).where(eq(schema.docs.id, req.params.docId)).run();
+  const doc = db.select().from(schema.docs).where(eq(schema.docs.id, req.params.docId)).get();
+  res.json({ doc });
+});
+
+app.put("/api/docs/:docId", (req, res) => {
+  const existing = db.select().from(schema.docs).where(eq(schema.docs.id, req.params.docId)).get();
+  if (!existing) return res.status(404).json({ error: "not found" });
+
+  const updates: Record<string, unknown> = { updatedAt: Date.now() };
+  if (req.body.title !== undefined) updates.title = req.body.title;
+  if (req.body.content !== undefined) updates.content = req.body.content;
+  if (req.body.category !== undefined) updates.category = req.body.category;
+  if (req.body.pinned !== undefined) updates.pinned = req.body.pinned ? 1 : 0;
+
+  db.update(schema.docs).set(updates).where(eq(schema.docs.id, req.params.docId)).run();
+  const doc = db.select().from(schema.docs).where(eq(schema.docs.id, req.params.docId)).get();
+  res.json({ doc });
+});
+
+app.delete("/api/docs/:docId", (req, res) => {
+  db.delete(schema.docs).where(eq(schema.docs.id, req.params.docId)).run();
+  res.json({ success: true });
+});
+
+// API docs generation — introspects registered routes
+const generateApiEndpoints = () => {
+  const endpoints: { method: string; path: string; description: string; group: string; params: { name: string; in: string; type: string; required: boolean }[] }[] = [];
+
+  const routeDescriptions: Record<string, { desc: string; group: string; params?: { name: string; in: string; type: string; required: boolean }[] }> = {
+    "GET /api/health": { desc: "Server health check and Claude token status", group: "System" },
+    "GET /api/auth/me": { desc: "Current authenticated user info", group: "Auth" },
+    "POST /api/auth/refresh": { desc: "Refresh authentication token", group: "Auth" },
+    "GET /api/dashboard/stats": { desc: "Aggregated dashboard statistics with per-project stats", group: "Dashboard" },
+    "GET /api/plans/my-usage": { desc: "Current plan usage limits", group: "Plans" },
+    "GET /api/plans/models": { desc: "Available AI models", group: "Plans" },
+    "GET /api/plans": { desc: "Available subscription plans", group: "Plans" },
+    "GET /api/projects/local-scan": { desc: "Scan local directories for importable projects", group: "Projects" },
+    "POST /api/projects/import": { desc: "Import an existing local project", group: "Projects", params: [
+      { name: "cloneUrl", in: "body", type: "string", required: true },
+      { name: "description", in: "body", type: "string", required: false },
+    ]},
+    "POST /api/projects/create": { desc: "Create a new project with scaffolding and git init", group: "Projects", params: [
+      { name: "name", in: "body", type: "string", required: true },
+      { name: "description", in: "body", type: "string", required: false },
+      { name: "stack", in: "body", type: "string[]", required: false },
+      { name: "isPrivate", in: "body", type: "boolean", required: false },
+    ]},
+    "GET /api/projects": { desc: "List all projects", group: "Projects" },
+    "GET /api/projects/:id": { desc: "Get project details", group: "Projects", params: [
+      { name: "id", in: "path", type: "string", required: true },
+    ]},
+    "DELETE /api/projects/:id": { desc: "Delete project and remove files from disk", group: "Projects", params: [
+      { name: "id", in: "path", type: "string", required: true },
+    ]},
+    "GET /api/projects/:id/git/status": { desc: "Git status: branch, staged/unstaged files, last commit, remote", group: "Git" },
+    "GET /api/projects/:id/git/config": { desc: "Git remote URL and default branch", group: "Git" },
+    "PUT /api/projects/:id/git/config": { desc: "Update git remote URL", group: "Git" },
+    "POST /api/projects/:id/git/init": { desc: "Initialize git repository in project", group: "Git" },
+    "POST /api/projects/:id/git/sync": { desc: "Pull rebase and push to remote", group: "Git" },
+    "GET /api/projects/:id/files": { desc: "File tree for project", group: "Files" },
+    "GET /api/projects/:id/files/content": { desc: "Read file content (path traversal protected)", group: "Files", params: [
+      { name: "path", in: "query", type: "string", required: true },
+    ]},
+    "GET /api/tasks": { desc: "List tasks with optional filters", group: "Tasks", params: [
+      { name: "projectId", in: "query", type: "string", required: false },
+      { name: "status", in: "query", type: "string", required: false },
+    ]},
+    "POST /api/tasks": { desc: "Create a new task", group: "Tasks", params: [
+      { name: "projectId", in: "body", type: "string", required: true },
+      { name: "title", in: "body", type: "string", required: true },
+      { name: "description", in: "body", type: "string", required: false },
+      { name: "priority", in: "body", type: "string", required: false },
+    ]},
+    "PATCH /api/tasks/:id": { desc: "Update task fields or advance status", group: "Tasks" },
+    "DELETE /api/tasks/:id": { desc: "Delete a task", group: "Tasks" },
+    "GET /api/tasks/:id/logs": { desc: "Task audit log entries", group: "Tasks" },
+    "GET /api/agents": { desc: "List all agents", group: "Agents" },
+    "POST /api/agents": { desc: "Create a new agent", group: "Agents" },
+    "PATCH /api/agents/:id": { desc: "Update agent configuration", group: "Agents" },
+    "DELETE /api/agents/:id": { desc: "Delete an agent", group: "Agents" },
+    "GET /api/docs": { desc: "List all documents", group: "Docs" },
+    "POST /api/docs": { desc: "Create a new document", group: "Docs" },
+    "PATCH /api/docs/:docId": { desc: "Update document content/metadata", group: "Docs" },
+    "DELETE /api/docs/:docId": { desc: "Delete a document", group: "Docs" },
+    "GET /api/docs-gen/api": { desc: "Generated API documentation endpoints", group: "Docs" },
+    "POST /api/docs-gen/generate-api": { desc: "Regenerate API documentation", group: "Docs" },
+    "GET /api/analytics/agents": { desc: "Agent performance metrics", group: "Analytics" },
+    "GET /api/analytics/trends": { desc: "Task completion trends over time", group: "Analytics" },
+    "GET /api/analytics/summary": { desc: "Cost and token usage summary", group: "Analytics" },
+    "GET /api/analytics/costs": { desc: "Cost breakdown by agent/model/day", group: "Analytics", params: [
+      { name: "period", in: "query", type: "string", required: false },
+      { name: "groupBy", in: "query", type: "string", required: false },
+    ]},
+    "GET /api/integrations/whatsapp/status": { desc: "WhatsApp connection status", group: "Integrations" },
+    "POST /api/integrations/whatsapp/connect": { desc: "Start WhatsApp connection (generates QR)", group: "Integrations" },
+    "POST /api/integrations/whatsapp/disconnect": { desc: "Disconnect WhatsApp", group: "Integrations" },
+    "GET /api/integrations/telegram/status": { desc: "Telegram bot connection status", group: "Integrations" },
+    "POST /api/integrations/telegram/connect": { desc: "Connect Telegram bot", group: "Integrations" },
+    "POST /api/integrations/telegram/disconnect": { desc: "Disconnect Telegram bot", group: "Integrations" },
+    "GET /api/claude-usage": { desc: "Claude Code CLI token usage data", group: "System" },
+    "GET /api/notifications": { desc: "List notifications", group: "System" },
+    "GET /api/notifications/unread-count": { desc: "Unread notification count", group: "System" },
+    "GET /api/messages": { desc: "List chat messages", group: "Messages" },
+    "GET /api/skills": { desc: "List custom skills", group: "Skills" },
+    "GET /api/workflows": { desc: "List workflows", group: "Workflows" },
+  };
+
+  for (const [key, info] of Object.entries(routeDescriptions)) {
+    const [method, path] = key.split(" ");
+    endpoints.push({ method, path, description: info.desc, group: info.group, params: info.params || [] });
+  }
+
+  return endpoints;
+};
+
+app.get("/api/docs-gen/api", (_req, res) => {
+  res.json({ endpoints: generateApiEndpoints() });
+});
+app.post("/api/docs-gen/generate-api", (_req, res) => {
+  res.json({ endpoints: generateApiEndpoints() });
 });
 
 // Messages stub
@@ -311,13 +643,91 @@ app.get("/api/skills", (_req, res) => {
 app.get("/api/agents/:id/skills", (_req, res) => {
   res.json({ skills: [] });
 });
-app.get("/api/agents/:id/memories", (_req, res) => {
-  res.json({ memories: [] });
+// Agent context — agent config + memories formatted for prompt injection
+app.get("/api/agents/:id/context", (req, res) => {
+  const agent = db.select().from(schema.agents).where(eq(schema.agents.id, req.params.id)).get();
+  if (!agent) return res.status(404).json({ error: "not found" });
+
+  const memories = db.select().from(schema.agentMemories)
+    .where(eq(schema.agentMemories.agentId, req.params.id)).all();
+
+  let memoriesBlock = "";
+  if (memories.length > 0) {
+    const memoryLines = memories.map(m =>
+      `- [${m.type}] ${m.content}${m.source ? ` (source: ${m.source})` : ""}`
+    ).join("\n");
+    memoriesBlock = `\n\n## Your Memories\nThese are learnings you've accumulated from previous tasks. Use them to inform your decisions:\n${memoryLines}`;
+  }
+
+  const memoryInstructions = `\n\n## Memory System
+You have a persistent memory system. After completing a task, save important learnings by calling:
+POST /api/agents/${agent.id}/memories
+Body: { "content": "<what you learned>", "type": "learning|correction|pattern|context", "source": "<task description>", "taskId": "<current task id>" }
+
+Types:
+- learning: new knowledge gained
+- correction: mistake you made and the fix
+- pattern: recurring code/architecture pattern
+- context: project-specific context worth remembering`;
+
+  const fullSystemPrompt = agent.systemPrompt + memoriesBlock + memoryInstructions;
+
+  res.json({
+    agent: {
+      ...agent,
+      systemPrompt: fullSystemPrompt,
+    },
+    memories,
+    memoriesCount: memories.length,
+  });
+});
+
+// Agent memories CRUD
+app.get("/api/agents/:id/memories", (req, res) => {
+  const memories = db.select().from(schema.agentMemories)
+    .where(eq(schema.agentMemories.agentId, req.params.id)).all();
+  res.json({ memories });
+});
+
+app.post("/api/agents/:id/memories", (req, res) => {
+  const memory = {
+    id: nanoid(),
+    agentId: req.params.id,
+    taskId: req.body.taskId || null,
+    type: req.body.type || "learning",
+    content: req.body.content,
+    source: req.body.source || null,
+    createdAt: Date.now(),
+  };
+  db.insert(schema.agentMemories).values(memory).run();
+  res.status(201).json({ memory });
+});
+
+app.delete("/api/agents/:id/memories/:memoryId", (req, res) => {
+  db.delete(schema.agentMemories).where(eq(schema.agentMemories.id, req.params.memoryId)).run();
+  res.json({ success: true });
 });
 
 // Claude Code CLI usage — reads token and fetches from Anthropic API
+let _usageCache: { usage: unknown; ts: number } | null = null;
+const USAGE_CACHE_TTL = 60_000; // 1 min
+const USAGE_CACHE_FILE = join(homedir(), ".claude", ".usage-cache.json");
+
+// Load disk cache on startup
+try {
+  if (existsSync(USAGE_CACHE_FILE)) {
+    const raw = JSON.parse(readFileSync(USAGE_CACHE_FILE, "utf-8"));
+    if (raw.usage) _usageCache = { usage: raw.usage, ts: raw.ts || 0 };
+  }
+} catch { /* ignore */ }
+
 app.get("/api/claude-usage", async (_req, res) => {
   try {
+    // Return fresh cache to avoid rate limiting
+    if (_usageCache && (Date.now() - _usageCache.ts < USAGE_CACHE_TTL)) {
+      return res.json({ error: null, usage: _usageCache.usage, cached: true });
+    }
+
     const token = getClaudeToken();
     if (!token) {
       return res.json({ error: "no_token", usage: null });
@@ -336,12 +746,52 @@ app.get("/api/claude-usage", async (_req, res) => {
     clearTimeout(timeout);
 
     if (!apiRes.ok) {
+      if (apiRes.status === 401) {
+        const socketIo = _req.app.get("io");
+        // Notify frontend via notification socket (already handled by frontend)
+        if (socketIo) {
+          socketIo.emit("agent:notification", {
+            id: `auth_expired_${Date.now()}`,
+            projectId: null,
+            type: "agent_error",
+            title: "Token Claude expirado",
+            body: "Execute /login no Claude Code para renovar o token.",
+            link: null,
+            createdAt: new Date().toISOString(),
+          });
+        }
+        // Auto-trigger claude login in background (non-blocking)
+        import("child_process").then(cp => {
+          cp.execFile("claude", ["login"], { timeout: 120000 }, (err) => {
+            if (!err && socketIo) {
+              socketIo.emit("agent:notification", {
+                id: `auth_refreshed_${Date.now()}`,
+                projectId: null,
+                type: "info",
+                title: "Token renovado",
+                body: "Login no Claude realizado com sucesso.",
+                link: null,
+                createdAt: new Date().toISOString(),
+              });
+            }
+          });
+        }).catch(() => {});
+      }
+      // Return cached data on API error so widget still renders
+      if (_usageCache) {
+        return res.json({ error: null, usage: _usageCache.usage, cached: true });
+      }
       return res.json({ error: `api_error_${apiRes.status}`, usage: null });
     }
 
     const usage = await apiRes.json();
+    _usageCache = { usage, ts: Date.now() };
     res.json({ error: null, usage });
   } catch (err) {
+    // Return cached data on fetch failure
+    if (_usageCache) {
+      return res.json({ error: null, usage: _usageCache.usage, cached: true });
+    }
     res.json({ error: "fetch_failed", usage: null });
   }
 });
@@ -373,6 +823,9 @@ const httpServer = createServer(app);
 const io = new SocketServer(httpServer, {
   cors: { origin: true },
 });
+
+// Share io with route handlers
+app.set("io", io);
 
 io.on("connection", (socket) => {
   console.log(`Socket connected: ${socket.id}`);

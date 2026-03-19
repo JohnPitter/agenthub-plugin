@@ -105,7 +105,7 @@ router.patch("/:id", (req, res) => {
   const { status, title, description, priority, category, assignedAgentId, branch, result, costUsd, tokensUsed } = req.body;
   const now = Date.now();
 
-  // Validate status transition if status is being changed
+  // Validate status transition only if status is actually changing
   if (status && status !== task.status) {
     const allowed = VALID_TRANSITIONS[task.status];
     if (!allowed || !allowed.includes(status)) {
@@ -115,6 +115,10 @@ router.patch("/:id", (req, res) => {
       });
       return;
     }
+  }
+  // Skip status update if same as current (no-op)
+  if (status === task.status) {
+    delete req.body.status;
   }
 
   const updates: Record<string, unknown> = { updatedAt: now };
