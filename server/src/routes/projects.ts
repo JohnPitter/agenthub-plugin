@@ -9,7 +9,7 @@ const router: ReturnType<typeof Router> = Router();
 // GET / — list all projects
 router.get("/", (_req, res) => {
   const rows = db.select().from(projects).all();
-  res.json(rows);
+  res.json({ projects: rows });
 });
 
 // POST / — create project
@@ -42,7 +42,7 @@ router.post("/", (req, res) => {
   };
 
   db.insert(projects).values(project).run();
-  res.status(201).json(project);
+  res.status(201).json({ project });
 });
 
 // POST /scan — scan a directory and return found projects
@@ -65,7 +65,7 @@ router.get("/:id", (req, res) => {
     res.status(404).json({ error: "project not found" });
     return;
   }
-  res.json(project);
+  res.json({ project });
 });
 
 // DELETE /:id — delete project
@@ -76,7 +76,7 @@ router.delete("/:id", (req, res) => {
     return;
   }
   db.delete(projects).where(eq(projects.id, req.params.id)).run();
-  res.json({ deleted: true });
+  res.json({ success: true });
 });
 
 export default router;

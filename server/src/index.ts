@@ -13,7 +13,8 @@ import agentsRouter from "./routes/agents.js";
 import filesRouter from "./routes/files.js";
 import { seedAgents } from "./seed.js";
 import { getClaudeToken } from "./lib/claude-token.js";
-import { DATA_DIR } from "./db.js";
+import { db, schema, DATA_DIR } from "./db.js";
+import { count, eq } from "drizzle-orm";
 
 // Use port 0 to let the OS assign a random available port
 const PREFERRED_PORT = parseInt(process.env.PORT ?? "0", 10);
@@ -50,6 +51,59 @@ app.get("/api/health", (_req, res) => {
     claudeToken: hasToken ? "found" : "not_found",
     uptime: process.uptime(),
   });
+});
+
+// Fake auth endpoint for local mode
+app.get("/api/auth/me", (_req, res) => {
+  res.json({ id: "local", login: "local", name: "Local User", email: null, role: "admin", avatarUrl: null, githubId: 0 });
+});
+
+// Dashboard stats
+app.get("/api/dashboard/stats", (_req, res) => {
+  const [{ value: totalProjects }] = db.select({ value: count() }).from(schema.projects).all();
+  const [{ value: activeAgents }] = db.select({ value: count() }).from(schema.agents).where(eq(schema.agents.isActive, 1)).all();
+  const [{ value: totalTasks }] = db.select({ value: count() }).from(schema.tasks).all();
+  const [{ value: runningTasks }] = db.select({ value: count() }).from(schema.tasks).where(eq(schema.tasks.status, "in_progress")).all();
+
+  res.json({
+    totalProjects,
+    activeAgents,
+    totalTasks,
+    runningTasks,
+    completedTasks: 0,
+    failedTasks: 0,
+    totalCostUsd: "0",
+    totalTokensUsed: 0,
+  });
+});
+
+// Plan usage — unlimited for local
+app.get("/api/plans/my-usage", (_req, res) => {
+  res.json({ plan: null, usage: { projects: 0, tasksThisMonth: 0 } });
+});
+
+// Storage usage — no limits for local
+app.get("/api/storage/usage", (_req, res) => {
+  res.json({ usage: { usedMb: 0, limitMb: 0, usedPercent: 0, projectCount: 0, maxProjects: -1, repoTtlDays: 0 } });
+});
+
+// Admin setup status — always complete for local
+app.get("/api/admin/setup-status", (_req, res) => {
+  res.json({ isSetupComplete: true, steps: { hasAdmin: true, hasApiKey: true, hasPlans: true } });
+});
+
+// Notifications — always 0 for local
+app.get("/api/notifications/unread-count", (_req, res) => {
+  res.json({ count: 0 });
+});
+
+// Available models
+app.get("/api/plans/models", (_req, res) => {
+  res.json({ models: [
+    { id: "claude-sonnet-4-5-20250929", name: "Claude Sonnet 4.5", provider: "anthropic" },
+    { id: "claude-haiku-4-5-20251001", name: "Claude Haiku 4.5", provider: "anthropic" },
+    { id: "claude-opus-4-6", name: "Claude Opus 4.6", provider: "anthropic" },
+  ]});
 });
 
 // Serve static frontend

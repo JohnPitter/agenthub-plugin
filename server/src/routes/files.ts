@@ -92,7 +92,7 @@ router.get("/projects/:id/files", (req, res) => {
 
   const maxDepth = parseInt(req.query.depth as string) || 5;
   const tree = buildFileTree(project.path, project.path, 0, Math.min(maxDepth, 10));
-  res.json(tree);
+  res.json({ files: tree });
 });
 
 // GET /projects/:id/files/content — get file content
@@ -149,10 +149,10 @@ router.get("/projects/:id/files/content", (req, res) => {
       return;
     }
 
-    const content = readFileSync(resolvedPath, "utf-8");
+    const fileContent = readFileSync(resolvedPath, "utf-8");
     res.json({
       path: filePath,
-      content,
+      content: fileContent,
       size: stat.size,
       extension: ext,
     });

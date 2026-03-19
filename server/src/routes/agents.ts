@@ -8,7 +8,7 @@ const router: ReturnType<typeof Router> = Router();
 // GET / — list all agents
 router.get("/", (_req, res) => {
   const rows = db.select().from(agents).all();
-  res.json(rows);
+  res.json({ agents: rows });
 });
 
 // POST / — create agent
@@ -37,7 +37,7 @@ router.post("/", (req, res) => {
   };
 
   db.insert(agents).values(agent).run();
-  res.status(201).json(agent);
+  res.status(201).json({ agent });
 });
 
 // PATCH /:id — update agent
@@ -67,7 +67,7 @@ router.patch("/:id", (req, res) => {
   db.update(agents).set(updates).where(eq(agents.id, req.params.id)).run();
 
   const updated = db.select().from(agents).where(eq(agents.id, req.params.id)).get();
-  res.json(updated);
+  res.json({ agent: updated });
 });
 
 // DELETE /:id — delete agent
@@ -84,7 +84,7 @@ router.delete("/:id", (req, res) => {
   }
 
   db.delete(agents).where(eq(agents.id, req.params.id)).run();
-  res.json({ deleted: true });
+  res.json({ success: true });
 });
 
 export default router;

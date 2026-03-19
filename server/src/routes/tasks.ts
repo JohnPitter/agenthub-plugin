@@ -38,7 +38,7 @@ router.get("/", (req, res) => {
   }
 
   const rows = query.orderBy(desc(tasks.createdAt)).all();
-  res.json(rows);
+  res.json({ tasks: rows });
 });
 
 // POST / — create task
@@ -81,7 +81,7 @@ router.post("/", (req, res) => {
     createdAt: now,
   }).run();
 
-  res.status(201).json(task);
+  res.status(201).json({ task });
 });
 
 // GET /:id — get single task
@@ -91,7 +91,7 @@ router.get("/:id", (req, res) => {
     res.status(404).json({ error: "task not found" });
     return;
   }
-  res.json(task);
+  res.json({ task });
 });
 
 // PATCH /:id — update task
@@ -149,7 +149,7 @@ router.patch("/:id", (req, res) => {
   }
 
   const updated = db.select().from(tasks).where(eq(tasks.id, req.params.id)).get();
-  res.json(updated);
+  res.json({ task: updated });
 });
 
 // DELETE /:id — delete task
@@ -163,7 +163,7 @@ router.delete("/:id", (req, res) => {
   // Delete associated logs first
   db.delete(taskLogs).where(eq(taskLogs.taskId, req.params.id)).run();
   db.delete(tasks).where(eq(tasks.id, req.params.id)).run();
-  res.json({ deleted: true });
+  res.json({ success: true });
 });
 
 // GET /:id/logs — get task logs
@@ -179,7 +179,7 @@ router.get("/:id/logs", (req, res) => {
     .orderBy(desc(taskLogs.createdAt))
     .all();
 
-  res.json(logs);
+  res.json({ logs });
 });
 
 export default router;

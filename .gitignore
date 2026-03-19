@@ -1,5 +1,8 @@
 node_modules
-dist
+server/node_modules
+server/dist
 .env
 *.sqlite
 *.db
+# Keep server/web/dist (pre-built frontend)
+!server/web/dist/
