@@ -1,8 +1,12 @@
 {
   "name": "agenthub",
   "description": "AgentHub plugins for Claude Code",
-  "plugins": {
-    "agenthub-plugin": {
+  "owner": {
+    "name": "JohnPitter",
+    "url": "https://github.com/JohnPitter"
+  },
+  "plugins": [
+    {
       "name": "agenthub-plugin",
       "description": "AI development orchestration — manage agents, tasks, and projects",
       "version": "1.0.0",
@@ -11,5 +15,5 @@
         "url": "https://github.com/JohnPitter/agenthub-plugin.git"
       }
     }
-  }
+  ]
 }
