@@ -1,0 +1,13 @@
+{
+  "name": "agenthub",
+  "version": "1.0.0",
+  "description": "AI development orchestration running on your machine — 8 agents, task state machine, docs, memories, git integration",
+  "author": {
+    "name": "JohnPitter",
+    "url": "https://github.com/JohnPitter"
+  },
+  "homepage": "https://github.com/JohnPitter/agenthub-plugin",
+  "repository": "https://github.com/JohnPitter/agenthub-plugin",
+  "license": "MIT",
+  "keywords": ["agenthub", "agents", "orchestration", "tasks", "dashboard", "local", "ai-dev"]
+}
