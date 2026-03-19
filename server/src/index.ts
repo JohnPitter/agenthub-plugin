@@ -5,6 +5,7 @@ import { Server as SocketServer } from "socket.io";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import open from "open";
+import { writeFileSync } from "fs";
 
 import projectsRouter from "./routes/projects.js";
 import tasksRouter from "./routes/tasks.js";
@@ -12,8 +13,10 @@ import agentsRouter from "./routes/agents.js";
 import filesRouter from "./routes/files.js";
 import { seedAgents } from "./seed.js";
 import { getClaudeToken } from "./lib/claude-token.js";
+import { DATA_DIR } from "./db.js";
 
-const PORT = parseInt(process.env.PORT ?? "4200", 10);
+// Use port 0 to let the OS assign a random available port
+const PREFERRED_PORT = parseInt(process.env.PORT ?? "0", 10);
 const app = express();
 
 // Middleware
@@ -80,13 +83,20 @@ io.on("connection", (socket) => {
 seedAgents();
 
 // Start server
-httpServer.listen(PORT, () => {
-  console.log(`\nAgentHub Local running at http://localhost:${PORT}`);
-  console.log(`API: http://localhost:${PORT}/api/health\n`);
+httpServer.listen(PREFERRED_PORT, () => {
+  const addr = httpServer.address();
+  const actualPort = typeof addr === "object" && addr ? addr.port : PREFERRED_PORT;
+
+  // Write port to file so the plugin command can read it
+  const portFile = join(DATA_DIR, "port");
+  writeFileSync(portFile, String(actualPort));
+
+  console.log(`\nAgentHub Local running at http://localhost:${actualPort}`);
+  console.log(`API: http://localhost:${actualPort}/api/health\n`);
 
   // Open browser unless NO_OPEN env is set
   if (!process.env.NO_OPEN) {
-    open(`http://localhost:${PORT}`).catch(() => {
+    open(`http://localhost:${actualPort}`).catch(() => {
       // Ignore if browser can't be opened
     });
   }
