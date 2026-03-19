@@ -125,6 +125,60 @@ app.post("/api/projects/import", (req, res) => {
   res.status(201).json({ project });
 });
 
+// Create project — local mode: creates folder with template
+app.post("/api/projects/create", (req, res) => {
+  const { name, description, isPrivate } = req.body;
+  if (!name?.trim()) {
+    return res.status(400).json({ error: "errorNameRequired" });
+  }
+
+  const projectsDir = join(homedir(), "Projects");
+  const { mkdirSync: mkDir, writeFileSync: writeFs } = require("fs");
+  mkDir(projectsDir, { recursive: true });
+
+  const dirName = name.trim().replace(/[^a-zA-Z0-9_-]/g, "-").toLowerCase();
+  const projectPath = join(projectsDir, dirName);
+
+  if (existsSync(projectPath)) {
+    return res.status(409).json({ error: "errorDuplicate" });
+  }
+
+  // Create project directory with basic package.json
+  mkDir(projectPath, { recursive: true });
+  writeFs(join(projectPath, "package.json"), JSON.stringify({
+    name: dirName,
+    version: "1.0.0",
+    description: description?.trim() || "",
+    private: isPrivate ?? true,
+    scripts: { dev: "echo 'No dev script configured'", build: "echo 'No build script configured'" },
+  }, null, 2));
+  writeFs(join(projectPath, "README.md"), `# ${name.trim()}\n\n${description?.trim() || ""}\n`);
+
+  // Git init
+  try {
+    const { execFileSync: execF } = require("child_process");
+    execF("git", ["init"], { cwd: projectPath, timeout: 5000 });
+    execF("git", ["add", "."], { cwd: projectPath, timeout: 5000 });
+    execF("git", ["commit", "-m", "Initial commit"], { cwd: projectPath, timeout: 5000 });
+  } catch { /* git init is optional */ }
+
+  const now = Date.now();
+  const project = {
+    id: nanoid(),
+    name: name.trim(),
+    path: projectPath,
+    stack: JSON.stringify(["nodejs"]),
+    description: description?.trim() || null,
+    githubUrl: null,
+    status: "active",
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  db.insert(schema.projects).values(project).run();
+  res.status(201).json({ project });
+});
+
 // API routes
 app.use("/api/projects", projectsRouter);
 app.use("/api/tasks", tasksRouter);
