@@ -1,19 +1,18 @@
 {
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "agenthub",
-  "description": "AgentHub plugins for Claude Code",
+  "version": "1.0.0",
+  "description": "AgentHub plugins for Claude Code — AI development orchestration",
   "owner": {
     "name": "JohnPitter",
-    "url": "https://github.com/JohnPitter"
+    "email": "joaopedro.ts16@gmail.com"
   },
   "plugins": [
     {
       "name": "agenthub-plugin",
-      "description": "AI development orchestration — manage agents, tasks, and projects",
-      "version": "1.0.0",
-      "source": {
-        "type": "git",
-        "url": "https://github.com/JohnPitter/agenthub-plugin.git"
-      }
+      "description": "AI development orchestration — manage agents, tasks, and projects from Claude Code",
+      "source": "./plugins/agenthub-plugin",
+      "category": "development"
     }
   ]
 }
