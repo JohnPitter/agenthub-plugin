@@ -5,7 +5,7 @@ import { Server as SocketServer } from "socket.io";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import open from "open";
-import { writeFileSync, existsSync } from "fs";
+import { writeFileSync, existsSync, mkdirSync } from "fs";
 import { homedir } from "os";
 import { nanoid } from "nanoid";
 
@@ -126,15 +126,14 @@ app.post("/api/projects/import", (req, res) => {
 });
 
 // Create project — local mode: creates folder with template
-app.post("/api/projects/create", (req, res) => {
+app.post("/api/projects/create", async (req, res) => {
   const { name, description, isPrivate } = req.body;
   if (!name?.trim()) {
     return res.status(400).json({ error: "errorNameRequired" });
   }
 
   const projectsDir = join(homedir(), "Projects");
-  const { mkdirSync: mkDir, writeFileSync: writeFs } = require("fs");
-  mkDir(projectsDir, { recursive: true });
+  mkdirSync(projectsDir, { recursive: true });
 
   const dirName = name.trim().replace(/[^a-zA-Z0-9_-]/g, "-").toLowerCase();
   const projectPath = join(projectsDir, dirName);
@@ -143,24 +142,23 @@ app.post("/api/projects/create", (req, res) => {
     return res.status(409).json({ error: "errorDuplicate" });
   }
 
-  // Create project directory with basic package.json
-  mkDir(projectPath, { recursive: true });
-  writeFs(join(projectPath, "package.json"), JSON.stringify({
+  mkdirSync(projectPath, { recursive: true });
+  writeFileSync(join(projectPath, "package.json"), JSON.stringify({
     name: dirName,
     version: "1.0.0",
     description: description?.trim() || "",
     private: isPrivate ?? true,
-    scripts: { dev: "echo 'No dev script configured'", build: "echo 'No build script configured'" },
+    scripts: { dev: "echo 'Configure your dev script'", build: "echo 'Configure your build script'" },
   }, null, 2));
-  writeFs(join(projectPath, "README.md"), `# ${name.trim()}\n\n${description?.trim() || ""}\n`);
+  writeFileSync(join(projectPath, "README.md"), `# ${name.trim()}\n\n${description?.trim() || ""}\n`);
 
-  // Git init
+  // Git init (best-effort)
   try {
-    const { execFileSync: execF } = require("child_process");
-    execF("git", ["init"], { cwd: projectPath, timeout: 5000 });
-    execF("git", ["add", "."], { cwd: projectPath, timeout: 5000 });
-    execF("git", ["commit", "-m", "Initial commit"], { cwd: projectPath, timeout: 5000 });
-  } catch { /* git init is optional */ }
+    const cp = await import("child_process");
+    cp.execFileSync("git", ["init"], { cwd: projectPath, timeout: 5000 });
+    cp.execFileSync("git", ["add", "."], { cwd: projectPath, timeout: 5000 });
+    cp.execFileSync("git", ["commit", "-m", "Initial commit"], { cwd: projectPath, timeout: 5000 });
+  } catch { /* optional */ }
 
   const now = Date.now();
   const project = {
