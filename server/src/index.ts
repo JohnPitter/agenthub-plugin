@@ -5,7 +5,9 @@ import { Server as SocketServer } from "socket.io";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import open from "open";
-import { writeFileSync } from "fs";
+import { writeFileSync, existsSync } from "fs";
+import { homedir } from "os";
+import { nanoid } from "nanoid";
 
 import projectsRouter from "./routes/projects.js";
 import tasksRouter from "./routes/tasks.js";
@@ -13,6 +15,7 @@ import agentsRouter from "./routes/agents.js";
 import filesRouter from "./routes/files.js";
 import { seedAgents } from "./seed.js";
 import { getClaudeToken } from "./lib/claude-token.js";
+import { scanWorkspace } from "./lib/scanner.js";
 import { db, schema, DATA_DIR } from "./db.js";
 import { count, eq } from "drizzle-orm";
 
@@ -34,6 +37,92 @@ app.use((req, _res, next) => {
     });
   }
   next();
+});
+
+// GitHub repos — must be before projectsRouter (which has /:id catch-all)
+app.get("/api/projects/github-repos", (_req, res) => {
+  try {
+    const homePath = homedir();
+    const scanDirs = [
+      join(homePath, "Projects"),
+      join(homePath, "Desenvolvimento", "Projects"),
+      join(homePath, "Development"),
+      join(homePath, "dev"),
+      join(homePath, "repos"),
+      join(homePath, "workspace"),
+      join(homePath, "code"),
+    ].filter(d => existsSync(d));
+
+    const allRepos: unknown[] = [];
+    const existingPaths = new Set(
+      db.select({ path: schema.projects.path }).from(schema.projects).all().map((p: { path: string }) => p.path)
+    );
+
+    for (const dir of scanDirs) {
+      try {
+        const found = scanWorkspace(dir);
+        for (const p of found) {
+          allRepos.push({
+            full_name: `local/${p.name}`,
+            name: p.name,
+            description: `${p.stack.join(", ")} — ${p.path}`,
+            html_url: p.path,
+            clone_url: p.path,
+            private: false,
+            language: p.stack[0] ?? null,
+            updated_at: new Date().toISOString(),
+            alreadyImported: existingPaths.has(p.path),
+          });
+        }
+      } catch { /* skip */ }
+    }
+
+    res.json({ repos: allRepos });
+  } catch {
+    res.json({ repos: [] });
+  }
+});
+
+// Import project endpoint — must be before /:id route
+app.post("/api/projects/import", (req, res) => {
+  const { repo, cloneUrl, htmlUrl, description } = req.body;
+  const localPath = cloneUrl || htmlUrl;
+  const name = repo || (localPath ? localPath.split(/[/\\]/).pop() : "unknown");
+
+  if (!localPath) {
+    return res.status(400).json({ error: "path is required" });
+  }
+
+  const existing = db.select().from(schema.projects).where(eq(schema.projects.path, localPath)).get();
+  if (existing) {
+    return res.status(409).json({ error: "errorDuplicate" });
+  }
+
+  let stack: string[] = [];
+  try {
+    const parentDir = join(localPath, "..");
+    if (existsSync(parentDir)) {
+      const found = scanWorkspace(parentDir);
+      const match = found.find((p: { path: string }) => p.path === localPath);
+      if (match) stack = match.stack;
+    }
+  } catch { /* ignore */ }
+
+  const now = Date.now();
+  const project = {
+    id: nanoid(),
+    name,
+    path: localPath,
+    stack: JSON.stringify(stack),
+    description: description ?? null,
+    githubUrl: null,
+    status: "active",
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  db.insert(schema.projects).values(project).run();
+  res.status(201).json({ project });
 });
 
 // API routes
@@ -135,57 +224,7 @@ app.get("/api/plans", (_req, res) => {
   res.json({ plans: [] });
 });
 
-// Local mode: scan common project directories and return in GitHub-repo format
-app.get("/api/projects/github-repos", (_req, res) => {
-  try {
-    const { scanWorkspace } = require("./lib/scanner.js");
-    const homePath = require("os").homedir();
-    const fs = require("fs");
-    const path = require("path");
-
-    // Scan common dev directories
-    const scanDirs = [
-      path.join(homePath, "Projects"),
-      path.join(homePath, "Desenvolvimento", "Projects"),
-      path.join(homePath, "Development"),
-      path.join(homePath, "dev"),
-      path.join(homePath, "repos"),
-      path.join(homePath, "workspace"),
-      path.join(homePath, "code"),
-      path.join(homePath, "src"),
-      path.join(homePath, "Desktop"),
-      path.join(homePath, "Documents"),
-    ].filter(d => fs.existsSync(d));
-
-    const allProjects: unknown[] = [];
-    const existingPaths = new Set(
-      db.select({ path: schema.projects.path }).from(schema.projects).all().map((p: { path: string }) => p.path)
-    );
-
-    for (const dir of scanDirs) {
-      try {
-        const found = scanWorkspace(dir);
-        for (const p of found) {
-          allProjects.push({
-            full_name: `local/${p.name}`,
-            name: p.name,
-            description: `${p.stack.join(", ")} — ${p.path}`,
-            html_url: p.path,
-            clone_url: p.path,
-            private: false,
-            language: p.stack[0] ?? null,
-            updated_at: new Date().toISOString(),
-            alreadyImported: existingPaths.has(p.path),
-          });
-        }
-      } catch { /* skip inaccessible dirs */ }
-    }
-
-    res.json({ repos: allProjects });
-  } catch (err) {
-    res.json({ repos: [] });
-  }
-});
+// (github-repos and import endpoints are defined above, before projectsRouter)
 
 // Analytics stubs — must match frontend expected response shapes
 app.get("/api/analytics/agents", (_req, res) => {
