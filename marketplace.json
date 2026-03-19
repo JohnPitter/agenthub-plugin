@@ -1,0 +1,15 @@
+{
+  "name": "agenthub",
+  "description": "AgentHub plugins for Claude Code",
+  "plugins": {
+    "agenthub-plugin": {
+      "name": "agenthub-plugin",
+      "description": "AI development orchestration — manage agents, tasks, and projects",
+      "version": "1.0.0",
+      "source": {
+        "type": "git",
+        "url": "https://github.com/JohnPitter/agenthub-plugin.git"
+      }
+    }
+  }
+}
