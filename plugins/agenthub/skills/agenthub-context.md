@@ -37,7 +37,7 @@ cancelled <- (any)     pending <- cancelled
 ```
 
 ## Available Commands
-- `/start` — Start server + open dashboard
+- `/agenthub` — Start server + open dashboard
 
 ## API Endpoints (dynamic port)
 - `GET /api/health` — Server status + Claude token check
