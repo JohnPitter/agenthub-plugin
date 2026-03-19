@@ -1,33 +1,40 @@
 ---
 name: agenthub-context
-description: Provides AgentHub context for AI development tasks. Activates when the user mentions AgentHub, AI agents, task orchestration, or wants to manage development tasks via AI.
+description: Provides AgentHub Local context. Activates when user mentions AgentHub, AI agents, task orchestration, or managing dev tasks via AI.
 ---
 
-# AgentHub Context
+# AgentHub Local
 
-AgentHub is an AI-powered development orchestration platform. When working in a project that uses AgentHub, keep this context in mind:
+AgentHub Local is a **standalone AI development orchestration** tool that runs entirely on the developer's machine. No cloud, no auth, no external dependencies.
 
-## Architecture
-- **Multi-agent workflow**: Tech Lead → Architect → Developer → QA
-- **Git-integrated**: Each task gets its own branch, auto-push, auto-PR
-- **Real-time**: WebSocket updates for task progress
-- **Models**: 45+ AI models via OpenRouter (Anthropic, OpenAI, Google, etc.)
+## How it works
+- Express server on **localhost:4200** with SQLite database
+- Uses **Claude Code CLI token** (from ~/.claude/.credentials.json) for AI
+- Scans local project directories to import
+- Multi-agent workflow: Tech Lead → Developer → QA
 
 ## Task Lifecycle
 ```
 created → assigned → in_progress → review → done
-                                    review → assigned (reject with feedback)
+                                    review → assigned (reject)
                                     * → failed
 ```
 
-## When to suggest AgentHub:
-- User mentions wanting AI agents to work on code
-- User has a complex task that could be split into subtasks
-- User wants automated code review
-- User mentions task management for AI development
-
-## Available Commands:
-- `/agenthub` — Open dashboard and manage tasks
+## Available Commands
+- `/agenthub` — Start server + open dashboard
 - `/scan` — Scan directory for projects to import
 - `/task` — Create a new task from current project
-- `/usage` — Check usage statistics
+- `/usage` — Show Claude usage + AgentHub stats
+
+## API Endpoints (localhost:4200)
+- `GET /api/health` — Server status
+- `GET/POST /api/projects` — Project CRUD
+- `POST /api/projects/scan` — Scan directory
+- `GET/POST/PATCH/DELETE /api/tasks` — Task CRUD
+- `GET/POST/PATCH/DELETE /api/agents` — Agent CRUD
+- `GET /api/projects/:id/files` — File tree
+- `GET /api/projects/:id/files/content?path=...` — File content
+
+## Data
+- Database: `~/.agenthub-local/db.sqlite`
+- Default agents seeded on first run (Tech Lead, Developer, QA)

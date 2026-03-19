@@ -1,35 +1,42 @@
 ---
-description: Create a new AgentHub task from the current project context
+description: Create a new AgentHub Local task from the current project context
 allowed-tools: Bash(*), Read, Glob, Grep
 ---
 
-# Create AgentHub Task
+# Create Task in AgentHub Local
 
-Create a new development task in AgentHub based on the current project context.
+Create a development task for the AI agents to execute on the current project.
 
 ## Context
 
-- Current project directory: !`pwd`
+- Project directory: !`pwd`
 - Project name: !`basename $(pwd)`
 - Git branch: !`git branch --show-current 2>/dev/null || echo "N/A"`
 - Recent commits: !`git log --oneline -5 2>/dev/null || echo "No git history"`
-- Git remote: !`git remote get-url origin 2>/dev/null || echo "No remote"`
 
 ## Your Task
 
-1. Ask the user to describe the task they want the AI agents to work on
-2. Determine the appropriate category (feature, bug, refactor, test, docs)
-3. Ask for priority (low, medium, high, urgent)
-4. Auto-detect the project from the current directory's git remote
-5. Create the task via the AgentHub API
-6. Offer to start the workflow immediately (assign to Tech Lead)
-
-## API Call
-
+1. **Check server is running:**
 ```bash
-curl -X POST https://agenthub.luxview.cloud/api/tasks \
+curl -s http://localhost:4200/api/health 2>/dev/null || echo "NOT_RUNNING"
+```
+
+2. **Find or create the project** in AgentHub Local. Check if current directory is already imported:
+```bash
+curl -s "http://localhost:4200/api/projects" 2>/dev/null
+```
+Look for a project with the matching path. If not found, import it first.
+
+3. **Ask the user** what they want the agents to build/fix. Get:
+   - Title (short description)
+   - Description (detailed context)
+   - Priority (low/medium/high/urgent)
+   - Category (feature/bug/refactor/test/docs)
+
+4. **Create the task:**
+```bash
+curl -s -X POST http://localhost:4200/api/tasks \
   -H "Content-Type: application/json" \
-  -H "Cookie: agenthub_token=$AGENTHUB_TOKEN" \
   -d '{
     "projectId": "<project-id>",
     "title": "<title>",
@@ -39,10 +46,11 @@ curl -X POST https://agenthub.luxview.cloud/api/tasks \
   }'
 ```
 
-After creation, ask if the user wants to start the workflow:
+5. **Show the created task** and ask if the user wants to start the workflow (assign to Tech Lead):
 ```bash
-curl -X PATCH https://agenthub.luxview.cloud/api/tasks/<id> \
+curl -s -X PATCH http://localhost:4200/api/tasks/<id> \
   -H "Content-Type: application/json" \
-  -H "Cookie: agenthub_token=$AGENTHUB_TOKEN" \
   -d '{"status": "assigned"}'
 ```
+
+Always confirm the task details before creating.

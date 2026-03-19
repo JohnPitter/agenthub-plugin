@@ -1,78 +1,67 @@
 ---
-description: Show Claude Code usage stats and Anthropic API consumption
+description: Show Claude Code usage stats and AgentHub Local stats
 allowed-tools: Bash(*), Read
 ---
 
-# Claude Code Usage & AgentHub Stats
+# Usage Stats — Claude Code + AgentHub Local
 
-Show the user their Claude Code usage statistics and AgentHub consumption.
+Show usage statistics from Claude Code CLI and the local AgentHub server.
 
 ## Your Task
 
-### 1. Claude Code CLI Credentials
-
-Read the Claude Code credentials file to get account info:
-
+### 1. Claude Code Token Status
 ```bash
-cat ~/.claude/.credentials.json 2>/dev/null || echo "No Claude credentials found"
+cat ~/.claude/.credentials.json 2>/dev/null || echo "NO_CREDENTIALS"
+```
+Parse the `claudeAiOauth` key. Show:
+- Token exists: yes/no
+- Has scopes: list them
+
+### 2. AgentHub Local Stats
+```bash
+curl -s http://localhost:4200/api/health 2>/dev/null || echo "SERVER_NOT_RUNNING"
 ```
 
-Parse the JSON and show:
-- Account type (from the OAuth data)
-- Session status
-
-### 2. AgentHub Usage
-
-If the user has an `AGENTHUB_TOKEN`, fetch their usage:
-
+If running, get stats:
 ```bash
-curl -s -H "Cookie: agenthub_token=$AGENTHUB_TOKEN" https://agenthub.luxview.cloud/api/plans/my-usage 2>/dev/null
+echo "Projects:" && curl -s http://localhost:4200/api/projects 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'  {len(d.get(\"projects\",[]))} project(s)')"
+echo "Tasks:" && curl -s http://localhost:4200/api/tasks 2>/dev/null | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+tasks=d.get('tasks',[])
+by_status={}
+for t in tasks:
+  s=t.get('status','unknown')
+  by_status[s]=by_status.get(s,0)+1
+total_cost=sum(float(t.get('costUsd','0') or '0') for t in tasks)
+total_tokens=sum(t.get('tokensUsed',0) or 0 for t in tasks)
+print(f'  {len(tasks)} total task(s)')
+for s,c in sorted(by_status.items()):
+  print(f'    {s}: {c}')
+print(f'  Cost: \${total_cost:.4f}')
+print(f'  Tokens: {total_tokens:,}')
+"
+echo "Agents:" && curl -s http://localhost:4200/api/agents 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'  {len(d.get(\"agents\",[]))} agent(s)')"
 ```
-
-Display:
-- Plan name and price
-- Projects used / max
-- Tasks this month / max
-- Storage used / max
-
-```bash
-curl -s -H "Cookie: agenthub_token=$AGENTHUB_TOKEN" https://agenthub.luxview.cloud/api/storage/usage 2>/dev/null
-```
-
-Display:
-- Storage MB used / limit
-- Repos count
-- TTL days
-
-### 3. AgentHub Cost Analytics
-
-```bash
-curl -s -H "Cookie: agenthub_token=$AGENTHUB_TOKEN" "https://agenthub.luxview.cloud/api/analytics/summary?period=30d" 2>/dev/null
-```
-
-Display:
-- Total cost USD this month
-- Total tokens consumed
-- Tasks completed / failed
-- Cost per model breakdown
 
 ### Display Format
 
-Show everything in a clean, terminal-friendly format:
+Present as a clean terminal report:
 
 ```
-╔══════════════════════════════════════════╗
-║          AgentHub Usage Report           ║
-╠══════════════════════════════════════════╣
-║ Plan: Pro ($29/month)                    ║
-║ Projects: 3/10                           ║
-║ Tasks: 45/200 this month                 ║
-║ Storage: 1.2GB / 5GB                     ║
-╠══════════════════════════════════════════╣
-║ Cost This Month: $12.34                  ║
-║ Tokens Used: 2.4M                        ║
-║ Tasks: 42 completed, 3 failed            ║
-╚══════════════════════════════════════════╝
+⚡ AgentHub Local — Usage Report
+════════════════════════════════
+Claude Token: ✓ detected
+Server: http://localhost:4200
+
+Projects: 3
+Tasks: 12 total
+  created: 2
+  in_progress: 1
+  done: 9
+Cost: $0.4523
+Tokens: 245,000
+Agents: 3
 ```
 
-If credentials or token are not available, guide the user to authenticate.
+If server is not running, tell the user to run `/agenthub` first.

@@ -1,54 +1,38 @@
 ---
-description: Scan current directory for projects and import to AgentHub
+description: Scan current directory for projects and import to AgentHub Local
 allowed-tools: Bash(*), Read, Glob, Grep
 ---
 
-# Scan & Import Projects to AgentHub
+# Scan & Import Projects to AgentHub Local
 
-Scan the current working directory for development projects and offer to import them to AgentHub.
+Scan the current working directory for development projects and import them to the local AgentHub server.
 
 ## Current Directory
 
 - Path: !`pwd`
-- Contents: !`ls -la`
 
 ## Your Task
 
-1. **Scan** each subdirectory for project markers:
-   - `package.json` → detect React/Vue/Angular/Next/Express/etc from dependencies
-   - `go.mod` → Go project
-   - `Cargo.toml` → Rust project
-   - `requirements.txt` / `pyproject.toml` → Python
-   - `pom.xml` / `build.gradle` → Java
-   - `.sln` / `.csproj` → .NET
-   - `Dockerfile` → Docker
+### Step 1: Ensure server is running
+```bash
+curl -s http://localhost:4200/api/health 2>/dev/null || echo "Server not running. Use /agenthub to start it first."
+```
 
-2. **Display** a formatted table showing:
-   ```
-   ┌─────────────────────┬──────────────────────┬─────────────────────────┐
-   │ Project             │ Stack                │ Git Remote              │
-   ├─────────────────────┼──────────────────────┼─────────────────────────┤
-   │ my-app              │ React, TypeScript    │ github.com/user/my-app  │
-   │ api-server          │ Express, PostgreSQL  │ github.com/user/api     │
-   │ ml-pipeline         │ Python, PyTorch      │ (no remote)             │
-   └─────────────────────┴──────────────────────┴─────────────────────────┘
-   ```
+### Step 2: Use the scan API
+```bash
+curl -s -X POST http://localhost:4200/api/projects/scan -H "Content-Type: application/json" -d "{\"path\": \"$(pwd)\"}"
+```
 
-3. **Ask** the user which projects to import to AgentHub
+### Step 3: Show results as a table
+Parse the JSON response and show each project with: Name, Stack, Git Remote.
 
-4. For each selected project, check if it has a GitHub remote:
-   - If yes: import via `POST /api/projects/import` with owner/repo
-   - If no: inform the user they need to push to GitHub first
+### Step 4: Ask which projects to import
+For each project the user wants to import, call:
+```bash
+curl -s -X POST http://localhost:4200/api/projects -H "Content-Type: application/json" -d '{"name": "<name>", "path": "<path>", "stack": "<stack_json>", "githubUrl": "<remote_or_null>"}'
+```
 
-5. Show results: imported projects with their AgentHub IDs
+### Step 5: Confirm imported projects
+Show the list of imported projects with their IDs.
 
-## Implementation
-
-For each directory, read the relevant config file to detect the stack. Use `git remote -v` to get the GitHub URL. Parse the owner/repo from the remote URL.
-
-Do NOT import:
-- Hidden directories (starting with .)
-- `node_modules`, `dist`, `build`, `.git`
-- Directories without any project marker
-
-Show the scan results and ask for confirmation before importing.
+If the scan returns no projects, explain what project markers are looked for (package.json, go.mod, Cargo.toml, requirements.txt, etc.) and suggest checking the directory path.

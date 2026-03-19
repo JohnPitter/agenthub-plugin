@@ -1,74 +1,58 @@
 ---
-description: Open AgentHub dashboard — manage AI agents, tasks, and projects
-allowed-tools: Bash(*), Read, Write, Glob, Grep, WebFetch
+description: Start AgentHub Local — AI development orchestration running on your machine
+allowed-tools: Bash(*), Read, Glob, Grep
 ---
 
-# AgentHub — AI Development Orchestration
+# AgentHub Local
 
-You are the AgentHub assistant. Help the user manage their AI-powered development workflow directly from Claude Code.
+Start the local AgentHub server and open the dashboard. Runs entirely on your machine — no cloud, no auth.
 
-## Current Environment
+## Your Task
 
-- Working directory: !`pwd`
-- Git status: !`git status --short 2>/dev/null || echo "Not a git repo"`
-- Projects in current directory: !`ls -d */ 2>/dev/null | head -20`
-
-## Available Actions
-
-Ask the user what they'd like to do:
-
-### 1. **Open Dashboard** (web UI)
-Open the AgentHub web dashboard in the browser:
+### Step 1: Check if server is running
 ```bash
-open https://agenthub.luxview.cloud
+curl -s http://localhost:4200/api/health 2>/dev/null || echo "NOT_RUNNING"
 ```
 
-### 2. **Scan & Import Projects**
-Scan the current directory for projects and offer to import them to AgentHub:
-- Look for directories with `package.json`, `go.mod`, `Cargo.toml`, `requirements.txt`, `pom.xml`, etc.
-- Show detected stack for each project
-- Offer to import via the AgentHub API
-
-### 3. **List Tasks**
-Show current tasks from AgentHub:
+### Step 2: If NOT_RUNNING, start the server
 ```bash
-curl -s -H "Cookie: agenthub_token=$AGENTHUB_TOKEN" https://agenthub.luxview.cloud/api/tasks | python3 -m json.tool
+cd "${CLAUDE_PLUGIN_ROOT}/../../server" && nohup npx tsx src/index.ts > /dev/null 2>&1 & sleep 2 && curl -s http://localhost:4200/api/health
 ```
 
-### 4. **Create Task**
-Create a new development task that AI agents will execute.
+### Step 3: Open dashboard
+```bash
+start http://localhost:4200 2>/dev/null || open http://localhost:4200 2>/dev/null || xdg-open http://localhost:4200 2>/dev/null || echo "Open in browser: http://localhost:4200"
+```
 
-### 5. **Watch Task Progress**
-Monitor a running task in real-time.
+### Step 4: Show status
+```bash
+echo "⚡ AgentHub Local — http://localhost:4200"
+echo ""
+echo "Agents:"
+curl -s http://localhost:4200/api/agents 2>/dev/null | python3 -c "
+import sys,json
+try:
+  data = json.load(sys.stdin)
+  for a in data.get('agents',[]):
+    status = '🟢' if a.get('isActive') else '⚪'
+    print(f'  {status} {a[\"name\"]} ({a[\"role\"]})')
+except: print('  (error reading agents)')
+"
+echo ""
+echo "Projects:"
+curl -s http://localhost:4200/api/projects 2>/dev/null | python3 -c "
+import sys,json
+try:
+  data = json.load(sys.stdin)
+  projects = data.get('projects',[])
+  if not projects: print('  (none — use /scan to import)')
+  for p in projects:
+    stack = json.loads(p.get('stack','[]'))[:3]
+    print(f'  📁 {p[\"name\"]} — {', '.join(stack) if stack else 'unknown'}')
+except: print('  (error reading projects)')
+"
+echo ""
+echo "Use /scan to import projects, /task to create tasks"
+```
 
-### 6. **Check Claude Usage**
-Show Anthropic API usage and costs from the Claude Code CLI credentials.
-
-## Instructions
-
-1. First check if the user has an `AGENTHUB_TOKEN` environment variable or a saved token
-2. If not authenticated, guide them to login via the web UI
-3. For project scanning, analyze the current directory structure
-4. Present results in a clean, formatted way
-5. Always confirm before making changes (importing projects, creating tasks)
-
-## Project Scanner
-
-When scanning for projects, check each subdirectory for:
-- `package.json` → Node.js (check deps for React, Vue, Angular, Next.js, Express, etc.)
-- `go.mod` → Go
-- `Cargo.toml` → Rust
-- `requirements.txt` or `pyproject.toml` → Python
-- `pom.xml` or `build.gradle` → Java
-- `.sln` or `.csproj` → .NET
-- `Dockerfile` → Docker
-
-Show a table with: Name, Stack, Path, Git Remote
-
-## Claude Usage Widget
-
-Read Claude Code credentials from `~/.claude/.credentials.json` to check:
-- Account type (free/pro)
-- Usage this period
-
-Present as a formatted status display.
+Tell the user the server is running and the dashboard is open. Mention the available commands: `/scan`, `/task`, `/usage`.
