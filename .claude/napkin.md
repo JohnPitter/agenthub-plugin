@@ -18,6 +18,9 @@
 - Edits to minified JS are acceptable and expected
 - Commits should include all changes, push immediately when asked
 - `python` not `python3` on Windows
+- Uses agent teams for parallel work — dispatch subagents for independent files
+- Prefers Claude Agent SDK over raw API calls for task execution
+- Prefers Anthropic SDK over raw https for simple API calls (auto retry)
 
 ## Patterns That Work
 - Edit minified JS by finding unique string anchors (e.g. specific className + text)
@@ -42,3 +45,9 @@
 - Frontend uses `S()` or `U()` for API calls (varies by file — check imports)
 - Socket.io `io` is created after routes — use `req.app.get("io")` in route handlers
 - Claude usage cache at `~/.claude/.usage-cache.json` — read on startup as fallback
+- Agent SDK exports: `query`, `Options`, `SDKResultMessage`, `SDKAssistantMessage`, `SDKMessage` — NOT `ClaudeAgentOptions` or `ResultMessage`
+- Agent SDK `Options` type has: `cwd`, `allowedTools`, `systemPrompt`, `model`, `permissionMode`, `maxTurns`
+- Anthropic SDK (`@anthropic-ai/sdk`): `new Anthropic({ apiKey: token })` + `client.messages.create()` — has auto retry for 429/5xx
+- WhatsApp auto-reconnect: must be inside `httpServer.listen()` callback so `io` is available
+- Task execution auto-triggers when status moves to `assigned` (via dynamic import in tasks.ts PATCH handler)
+- Board kanban columns: created, assigned, in_progress, review, done, failed, cancelled — NO `pending` column
