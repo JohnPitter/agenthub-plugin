@@ -496,8 +496,8 @@ function GitHubIntegration() {
   const [checking, setChecking] = useState(true);
 
   useEffect(() => {
-    api<{ connected: boolean }>("/integrations/github/status")
-      .then((data) => setConnected(data.connected))
+    api<{ status: string; hasToken: boolean }>("/integrations/github/status")
+      .then((data) => setConnected(data.status === "connected" && data.hasToken))
       .catch(() => {})
       .finally(() => setChecking(false));
   }, []);

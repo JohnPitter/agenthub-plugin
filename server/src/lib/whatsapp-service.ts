@@ -371,8 +371,9 @@ async function transcribeAudio(base64Audio: string): Promise<string | null> {
     const boundary = `----FormBoundary${Date.now()}`;
     const parts: Buffer[] = [];
 
-    // File part
-    parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="audio.ogg"\r\nContent-Type: audio/ogg\r\n\r\n`));
+    // File part — WhatsApp audio is OGG Opus
+    console.log(`[WhatsApp] Sending to Groq: ${audioBuffer.length} bytes`);
+    parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="audio.ogg"\r\nContent-Type: audio/ogg; codecs=opus\r\n\r\n`));
     parts.push(audioBuffer);
     parts.push(Buffer.from("\r\n"));
 
@@ -620,10 +621,24 @@ export class WhatsAppService {
 
         // Handle audio messages — transcribe via Whisper or ask user to type
         if (isAudio && client) {
-          console.log(`[WhatsApp] Audio message from ${from}, attempting transcription...`);
+          console.log(`[WhatsApp] Audio message from ${from}, type=${msg.type}, mimetype=${(msg as unknown as { mimetype?: string }).mimetype}`);
           try {
             const mediaData = await client.downloadMedia(msg);
-            const base64Audio = typeof mediaData === "string" ? mediaData : (mediaData as { data?: string })?.data || "";
+            console.log(`[WhatsApp] downloadMedia type: ${typeof mediaData}, keys: ${mediaData && typeof mediaData === "object" ? Object.keys(mediaData).join(",") : "N/A"}`);
+
+            // Extract base64 data — WPPConnect may return string or object with data field
+            let base64Audio = "";
+            if (typeof mediaData === "string") {
+              base64Audio = mediaData;
+            } else if (mediaData && typeof mediaData === "object") {
+              const obj = mediaData as Record<string, unknown>;
+              base64Audio = (obj.data as string) || (obj.body as string) || "";
+            }
+            // Strip data URI prefix if present (data:audio/ogg;base64,...)
+            if (base64Audio.includes(",")) {
+              base64Audio = base64Audio.split(",").pop() || "";
+            }
+            console.log(`[WhatsApp] base64 length: ${base64Audio.length}`);
 
             if (base64Audio) {
               const transcription = await transcribeAudio(base64Audio);

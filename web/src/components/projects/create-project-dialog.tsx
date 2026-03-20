@@ -32,10 +32,11 @@ export function CreateProjectDialog({ open, onClose, onCreated }: CreateProjectD
   // Check GitHub integration status on mount
   useEffect(() => {
     if (!open) return;
-    api<{ connected: boolean }>("/integrations/github/status")
+    api<{ status: string; hasToken: boolean }>("/integrations/github/status")
       .then((data) => {
-        setGithubOk(data.connected);
-        setCreateOnGithub(data.connected);
+        const ok = data.status === "connected" && data.hasToken;
+        setGithubOk(ok);
+        setCreateOnGithub(ok);
       })
       .catch(() => setGithubOk(false));
   }, [open]);
