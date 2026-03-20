@@ -1,6 +1,6 @@
 import { useState, useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { Plus, Trash2, ArrowDown, Play, ChevronRight, CornerDownLeft, CornerUpLeft, Zap, Bot, GitFork, Merge, AlertCircle } from "lucide-react";
+import { Plus, Trash2, ArrowDown, Play, ChevronRight, CornerDownLeft, CornerUpLeft, Zap, Bot, GitFork, Merge, AlertCircle, CheckCircle2 } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { AgentAvatar } from "./agent-avatar";
 import { WorkflowToolbar } from "../workflows/workflow-toolbar";
@@ -250,6 +250,7 @@ function getStepNodeType(step: WorkflowStep): WorkflowNodeType {
 export function WorkflowEditor({ agents, workflow, onSave, apiWorkflow, onSaveApi, workflows = [], onSelectWorkflow, onSetDefault, saving = false }: WorkflowEditorProps) {
   const { t } = useTranslation();
   const [wf, setWf] = useState<AgentWorkflow>(() => workflow ?? buildDefaultWorkflow(agents));
+  const [isDirty, setIsDirty] = useState(false);
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
   const [conditionNode, setConditionNode] = useState<WorkflowNode | null>(null);
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
@@ -269,6 +270,7 @@ export function WorkflowEditor({ agents, workflow, onSave, apiWorkflow, onSaveAp
 
   const updateSteps = useCallback((fn: (steps: WorkflowStep[]) => WorkflowStep[]) => {
     setWf((prev) => ({ ...prev, steps: fn(prev.steps), updatedAt: new Date() }));
+    setIsDirty(true);
   }, []);
 
   const addStep = useCallback((parentId: string | null) => {
@@ -385,6 +387,9 @@ export function WorkflowEditor({ agents, workflow, onSave, apiWorkflow, onSaveAp
         errors.push(t("workflow.validation.missingAgent", "Passo \"{{label}}\" sem agente valido", { label: step.label }));
       }
     }
+    if (errors.length === 0) {
+      errors.push("✓ " + t("workflow.validation.allGood", "Workflow válido — nenhum problema encontrado"));
+    }
     setValidationErrors(errors);
     setSimulationOrder(null);
   }, [wf, stepMap, agentMap, t]);
@@ -425,6 +430,7 @@ export function WorkflowEditor({ agents, workflow, onSave, apiWorkflow, onSaveAp
   // Handle save — uses API if available, falls back to localStorage
   const handleSave = useCallback(() => {
     onSave(wf);
+    setIsDirty(false);
   }, [wf, onSave]);
 
   // Compute layers and identify back-edges
@@ -693,6 +699,7 @@ export function WorkflowEditor({ agents, workflow, onSave, apiWorkflow, onSaveAp
         onSimulate={handleSimulate}
         onSave={handleSave}
         saving={saving}
+        isDirty={isDirty}
         workflows={workflows}
         activeWorkflowId={apiWorkflow?.id ?? null}
         onSelectWorkflow={onSelectWorkflow ?? (() => {})}
@@ -701,21 +708,29 @@ export function WorkflowEditor({ agents, workflow, onSave, apiWorkflow, onSaveAp
       />
 
       {/* Validation errors / Simulation banner */}
-      {validationErrors.length > 0 && (
-        <div className="mx-5 mt-3 rounded-lg border border-danger/30 bg-danger-light p-3">
-          <div className="flex items-center gap-2 mb-1">
-            <AlertCircle className="h-4 w-4 text-danger" />
-            <span className="text-[12px] font-semibold text-danger">
-              {t("workflow.validation.title", "Problemas encontrados")}
-            </span>
+      {validationErrors.length > 0 && (() => {
+        const isSuccess = validationErrors.length === 1 && validationErrors[0].startsWith("✓");
+        return (
+          <div className={cn("mx-5 mt-3 rounded-lg border p-3", isSuccess ? "border-success/30 bg-success-light" : "border-danger/30 bg-danger-light")}>
+            <div className="flex items-center gap-2 mb-1">
+              {isSuccess
+                ? <CheckCircle2 className="h-4 w-4 text-success" />
+                : <AlertCircle className="h-4 w-4 text-danger" />
+              }
+              <span className={cn("text-[12px] font-semibold", isSuccess ? "text-success" : "text-danger")}>
+                {isSuccess ? t("workflow.validation.valid", "Workflow válido") : t("workflow.validation.title", "Problemas encontrados")}
+              </span>
+            </div>
+            <ul className="space-y-0.5">
+              {validationErrors.map((err, i) => (
+                <li key={i} className={cn("text-[11px] pl-6", isSuccess ? "text-success/80" : "text-danger/80")}>
+                  {isSuccess ? err : `- ${err}`}
+                </li>
+              ))}
+            </ul>
           </div>
-          <ul className="space-y-0.5">
-            {validationErrors.map((err, i) => (
-              <li key={i} className="text-[11px] text-danger/80 pl-6">- {err}</li>
-            ))}
-          </ul>
-        </div>
-      )}
+        );
+      })()}
 
       {simulationOrder && (
         <div className="mx-5 mt-3 rounded-lg border border-info/30 bg-info-light p-3">

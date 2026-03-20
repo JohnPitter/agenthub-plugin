@@ -23,6 +23,7 @@ interface WorkflowToolbarProps {
   onSimulate: () => void;
   onSave: () => void;
   saving: boolean;
+  isDirty?: boolean;
   workflows: Workflow[];
   activeWorkflowId: string | null;
   onSelectWorkflow: (id: string) => void;
@@ -49,6 +50,7 @@ export function WorkflowToolbar({
   onSimulate,
   onSave,
   saving,
+  isDirty,
   workflows,
   activeWorkflowId,
   onSelectWorkflow,
@@ -164,7 +166,7 @@ export function WorkflowToolbar({
       {/* Save */}
       <button
         onClick={onSave}
-        disabled={saving}
+        disabled={saving || isDirty === false}
         className="flex items-center gap-1.5 rounded-md bg-brand px-4 py-1.5 text-[12px] font-semibold text-white hover:bg-brand-hover transition-colors disabled:opacity-50"
       >
         {saving ? (
