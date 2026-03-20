@@ -39,7 +39,7 @@ jobs:
         run: npm ci
       - name: Start server
         working-directory: server
-        run: NO_OPEN=1 npx tsx src/index.ts &
+        run: NO_OPEN=1 DISABLE_AUTO_EXECUTE=1 npx tsx src/index.ts &
         env:
           PORT: 0
       - name: Wait for server

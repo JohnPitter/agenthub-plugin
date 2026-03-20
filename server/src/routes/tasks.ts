@@ -341,8 +341,8 @@ router.patch("/:id", (req, res) => {
 
   const updated = db.select().from(tasks).where(eq(tasks.id, req.params.id)).get();
 
-  // Auto-execute when task moves to assigned
-  if (status === "assigned" && status !== task.status) {
+  // Auto-execute when task moves to assigned (skip in test/CI environments)
+  if (status === "assigned" && status !== task.status && !process.env.DISABLE_AUTO_EXECUTE) {
     const taskIdForExec = req.params.id;
     const io = req.app.get("io") ?? null;
     res.json({ task: updated });
