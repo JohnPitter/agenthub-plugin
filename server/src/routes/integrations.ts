@@ -204,4 +204,55 @@ router.post("/integrations/telegram/disconnect", (_req, res) => {
   res.json({ success: true, status: "disconnected" });
 });
 
+/**
+ * GitHub integration — stores personal access token for auto-PR
+ */
+router.get("/integrations/github/status", (_req, res) => {
+  const integration = db.select().from(schema.integrations)
+    .where(eq(schema.integrations.type, "github")).get();
+  if (!integration) {
+    return res.json({ status: "disconnected", integrationId: null, hasToken: false });
+  }
+  const config = integration.config ? JSON.parse(integration.config) : {};
+  const hasToken = !!config.token;
+  res.json({ status: hasToken ? "connected" : "disconnected", integrationId: integration.id, hasToken });
+});
+
+router.post("/integrations/github/connect", (req, res) => {
+  const { token } = req.body;
+  if (!token?.trim()) return res.status(400).json({ error: "Token is required" });
+
+  const existing = db.select().from(schema.integrations)
+    .where(eq(schema.integrations.type, "github")).get();
+
+  const now = Date.now();
+  if (existing) {
+    db.update(schema.integrations).set({
+      config: JSON.stringify({ token: token.trim() }),
+      status: "connected",
+      updatedAt: now,
+    }).where(eq(schema.integrations.id, existing.id)).run();
+    res.json({ status: "connected", integrationId: existing.id });
+  } else {
+    const id = nanoid();
+    db.insert(schema.integrations).values({
+      id, type: "github", status: "connected",
+      config: JSON.stringify({ token: token.trim() }),
+      createdAt: now, updatedAt: now,
+    }).run();
+    res.json({ status: "connected", integrationId: id });
+  }
+});
+
+router.post("/integrations/github/disconnect", (_req, res) => {
+  const existing = db.select().from(schema.integrations)
+    .where(eq(schema.integrations.type, "github")).get();
+  if (existing) {
+    db.update(schema.integrations).set({
+      status: "disconnected", config: null, updatedAt: Date.now(),
+    }).where(eq(schema.integrations.id, existing.id)).run();
+  }
+  res.json({ success: true, status: "disconnected" });
+});
+
 export default router;

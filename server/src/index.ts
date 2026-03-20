@@ -7,6 +7,7 @@ import { fileURLToPath } from "url";
 import open from "open";
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "fs";
 import { execFileSync } from "child_process";
+import https from "https";
 import { homedir } from "os";
 import { nanoid } from "nanoid";
 
@@ -55,8 +56,36 @@ app.use((req, _res, next) => {
   next();
 });
 
-// GitHub repos — must be before projectsRouter (which has /:id catch-all)
-app.get("/api/projects/local-scan", (_req, res) => {
+// Helper: fetch GitHub repos via API
+function fetchGitHubRepos(token: string): Promise<unknown[]> {
+  return new Promise((resolve) => {
+    const req = https.request({
+      hostname: "api.github.com",
+      path: "/user/repos?per_page=100&sort=updated&affiliation=owner",
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+        "User-Agent": "agenthub-local/1.0.0",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+    }, (res) => {
+      let data = "";
+      res.on("data", (chunk: string) => { data += chunk; });
+      res.on("end", () => {
+        if (res.statusCode === 200) {
+          try { resolve(JSON.parse(data)); } catch { resolve([]); }
+        } else { resolve([]); }
+      });
+    });
+    req.on("error", () => resolve([]));
+    req.setTimeout(10000, () => { req.destroy(); resolve([]); });
+    req.end();
+  });
+}
+
+// Local scan + GitHub repos — must be before projectsRouter (which has /:id catch-all)
+app.get("/api/projects/local-scan", async (_req, res) => {
   try {
     const homePath = homedir();
     const scanDirs = [
@@ -73,7 +102,12 @@ app.get("/api/projects/local-scan", (_req, res) => {
     const existingPaths = new Set(
       db.select({ path: schema.projects.path }).from(schema.projects).all().map((p: { path: string }) => p.path)
     );
+    const existingUrls = new Set(
+      db.select({ url: schema.projects.githubUrl }).from(schema.projects).all()
+        .map((p: { url: string | null }) => p.url).filter(Boolean)
+    );
 
+    // Local repos
     for (const dir of scanDirs) {
       try {
         const found = scanWorkspace(dir);
@@ -88,9 +122,42 @@ app.get("/api/projects/local-scan", (_req, res) => {
             language: p.stack[0] ?? null,
             updated_at: new Date().toISOString(),
             alreadyImported: existingPaths.has(p.path),
+            stargazers_count: 0,
+            owner: { login: "local" },
           });
         }
       } catch { /* skip */ }
+    }
+
+    // GitHub repos (if token configured)
+    const ghIntegration = db.select().from(schema.integrations)
+      .where(eq(schema.integrations.type, "github")).get();
+    const ghToken = ghIntegration?.config ? JSON.parse(ghIntegration.config).token : null;
+
+    if (ghToken) {
+      const ghRepos = await fetchGitHubRepos(ghToken) as Array<{
+        full_name: string; name: string; description: string | null;
+        html_url: string; clone_url: string; private: boolean;
+        language: string | null; updated_at: string; stargazers_count: number;
+        owner: { login: string };
+      }>;
+
+      for (const r of ghRepos) {
+        allRepos.push({
+          id: r.full_name,
+          full_name: r.full_name,
+          name: r.name,
+          description: r.description,
+          html_url: r.html_url,
+          clone_url: r.clone_url,
+          private: r.private,
+          language: r.language,
+          updated_at: r.updated_at,
+          stargazers_count: r.stargazers_count,
+          owner: r.owner,
+          alreadyImported: existingUrls.has(r.html_url),
+        });
+      }
     }
 
     res.json({ repos: allRepos });
@@ -141,9 +208,35 @@ app.post("/api/projects/import", (req, res) => {
   res.status(201).json({ project });
 });
 
-// Create project — local mode: creates folder with template
+// Helper: create GitHub repo via API
+function createGitHubRepo(token: string, name: string, description: string, isPrivate: boolean): Promise<{ status: number; data: Record<string, unknown> | null }> {
+  return new Promise((resolve) => {
+    const body = JSON.stringify({ name, description, private: isPrivate, auto_init: false });
+    const req = https.request({
+      hostname: "api.github.com", path: "/user/repos", method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json",
+        "User-Agent": "agenthub-local/1.0.0", "X-GitHub-Api-Version": "2022-11-28",
+        "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body),
+      },
+    }, (res) => {
+      let data = "";
+      res.on("data", (chunk: string) => { data += chunk; });
+      res.on("end", () => {
+        try { resolve({ status: res.statusCode ?? 500, data: JSON.parse(data) }); }
+        catch { resolve({ status: res.statusCode ?? 500, data: null }); }
+      });
+    });
+    req.on("error", () => resolve({ status: 500, data: null }));
+    req.setTimeout(15000, () => { req.destroy(); resolve({ status: 408, data: null }); });
+    req.write(body);
+    req.end();
+  });
+}
+
+// Create project — local + optional GitHub repo
 app.post("/api/projects/create", async (req, res) => {
-  const { name, description, isPrivate, stack } = req.body;
+  const { name, description, isPrivate, stack, createOnGithub } = req.body;
   if (!name?.trim()) {
     return res.status(400).json({ error: "errorNameRequired" });
   }
@@ -158,22 +251,73 @@ app.post("/api/projects/create", async (req, res) => {
     return res.status(409).json({ error: "errorDuplicate" });
   }
 
-  mkdirSync(projectPath, { recursive: true });
-  writeFileSync(join(projectPath, "package.json"), JSON.stringify({
-    name: dirName,
-    version: "1.0.0",
-    description: description?.trim() || "",
-    private: isPrivate ?? true,
-    scripts: { dev: "echo 'Configure your dev script'", build: "echo 'Configure your build script'" },
-  }, null, 2));
-  writeFileSync(join(projectPath, "README.md"), `# ${name.trim()}\n\n${description?.trim() || ""}\n`);
+  // Check if GitHub is configured
+  const ghIntegration = db.select().from(schema.integrations)
+    .where(eq(schema.integrations.type, "github")).get();
+  const ghToken = ghIntegration?.config ? JSON.parse(ghIntegration.config).token : null;
 
-  // Git init (best-effort)
-  try {
-    execFileSync("git", ["init"], { cwd: projectPath, timeout: 5000 });
-    execFileSync("git", ["add", "."], { cwd: projectPath, timeout: 5000 });
-    execFileSync("git", ["commit", "-m", "Initial commit"], { cwd: projectPath, timeout: 5000 });
-  } catch { /* optional */ }
+  let githubUrl: string | null = null;
+  let cloneUrl: string | null = null;
+
+  // Create GitHub repo only if user explicitly chose it AND token is available
+  if (createOnGithub && ghToken) {
+    const ghResult = await createGitHubRepo(ghToken, dirName, description?.trim() || "", isPrivate ?? true);
+    if (ghResult.status === 201 && ghResult.data) {
+      githubUrl = ghResult.data.html_url as string;
+      cloneUrl = ghResult.data.clone_url as string;
+    }
+    // If GitHub creation fails (e.g. repo already exists), continue with local only
+  }
+
+  // Clone from GitHub or create locally
+  if (cloneUrl) {
+    try {
+      execFileSync("git", ["clone", cloneUrl, projectPath], { timeout: 60000 });
+    } catch {
+      // Clone failed — fall back to local creation
+      cloneUrl = null;
+    }
+  }
+
+  if (!cloneUrl) {
+    // Local creation (no GitHub or clone failed)
+    mkdirSync(projectPath, { recursive: true });
+    writeFileSync(join(projectPath, "package.json"), JSON.stringify({
+      name: dirName,
+      version: "1.0.0",
+      description: description?.trim() || "",
+      private: isPrivate ?? true,
+      scripts: { dev: "echo 'Configure your dev script'", build: "echo 'Configure your build script'" },
+    }, null, 2));
+    writeFileSync(join(projectPath, "README.md"), `# ${name.trim()}\n\n${description?.trim() || ""}\n`);
+
+    // Git init
+    try {
+      execFileSync("git", ["init"], { cwd: projectPath, timeout: 5000 });
+      execFileSync("git", ["add", "."], { cwd: projectPath, timeout: 5000 });
+      execFileSync("git", ["commit", "-m", "Initial commit"], { cwd: projectPath, timeout: 5000 });
+      // Add remote if GitHub was created but clone failed
+      if (githubUrl && cloneUrl === null) {
+        const remoteUrl = githubUrl.replace("https://github.com/", "https://github.com/") + ".git";
+        try { execFileSync("git", ["remote", "add", "origin", remoteUrl], { cwd: projectPath, timeout: 5000 }); } catch { /* ignore */ }
+      }
+    } catch { /* optional */ }
+  } else {
+    // Cloned from GitHub — add template files if empty
+    if (!existsSync(join(projectPath, "package.json"))) {
+      writeFileSync(join(projectPath, "package.json"), JSON.stringify({
+        name: dirName, version: "1.0.0", description: description?.trim() || "",
+        private: isPrivate ?? true,
+        scripts: { dev: "echo 'Configure your dev script'", build: "echo 'Configure your build script'" },
+      }, null, 2));
+      writeFileSync(join(projectPath, "README.md"), `# ${name.trim()}\n\n${description?.trim() || ""}\n`);
+      try {
+        execFileSync("git", ["add", "."], { cwd: projectPath, timeout: 5000 });
+        execFileSync("git", ["commit", "-m", "Initial commit"], { cwd: projectPath, timeout: 5000 });
+        execFileSync("git", ["push", "-u", "origin", "main"], { cwd: projectPath, timeout: 30000 });
+      } catch { /* best-effort */ }
+    }
+  }
 
   const now = Date.now();
   const project = {
@@ -182,7 +326,7 @@ app.post("/api/projects/create", async (req, res) => {
     path: projectPath,
     stack: JSON.stringify(Array.isArray(stack) && stack.length > 0 ? stack : ["nodejs"]),
     description: description?.trim() || null,
-    githubUrl: null,
+    githubUrl,
     status: "active",
     createdAt: now,
     updatedAt: now,
