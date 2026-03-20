@@ -924,10 +924,22 @@ try {
 
 app.get("/api/claude-usage", async (_req, res) => {
   try {
-    // Return fresh cache to avoid rate limiting
+    // Return fresh in-memory cache
     if (_usageCache && (Date.now() - _usageCache.ts < USAGE_CACHE_TTL)) {
       return res.json({ error: null, usage: _usageCache.usage, cached: true });
     }
+
+    // Re-read disk cache (may have been updated by claude-usage-monitor plugin
+    // using native rate_limits from CLI v2.1.80+)
+    try {
+      if (existsSync(USAGE_CACHE_FILE)) {
+        const diskRaw = JSON.parse(readFileSync(USAGE_CACHE_FILE, "utf-8"));
+        if (diskRaw.usage && diskRaw.ts && (Date.now() - diskRaw.ts < USAGE_CACHE_TTL)) {
+          _usageCache = { usage: diskRaw.usage, ts: diskRaw.ts };
+          return res.json({ error: null, usage: diskRaw.usage, cached: true });
+        }
+      }
+    } catch { /* ignore disk read errors */ }
 
     const token = getClaudeToken();
     if (!token) {
