@@ -5,7 +5,7 @@ import { Server as SocketServer } from "socket.io";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import open from "open";
-import { writeFileSync, readFileSync, existsSync, mkdirSync } from "fs";
+import { writeFileSync, readFileSync, existsSync, mkdirSync, rmSync } from "fs";
 import { execFileSync } from "child_process";
 import https from "https";
 import { homedir } from "os";
@@ -567,9 +567,17 @@ app.get("/api/plans/my-usage", (_req, res) => {
   res.json({ plan: null, usage: { projects: 0, tasksThisMonth: 0 } });
 });
 
-// Factory reset — wipe all data except agents
+// Factory reset — wipe all data except agents, delete project files from disk
 app.post("/api/admin/factory-reset", (_req, res) => {
   try {
+    // Delete project files from disk
+    const allProjects = db.select().from(schema.projects).all();
+    for (const p of allProjects) {
+      if (p.path && existsSync(p.path)) {
+        try { rmSync(p.path, { recursive: true, force: true }); } catch { /* best-effort */ }
+      }
+    }
+
     db.delete(schema.taskLogs).run();
     db.delete(schema.messages).run();
     db.delete(schema.tasks).run();
@@ -578,7 +586,7 @@ app.post("/api/admin/factory-reset", (_req, res) => {
     db.delete(schema.agentMemories).run();
     db.delete(schema.integrations).run();
 
-    res.json({ success: true, message: "All data cleared. Agents preserved." });
+    res.json({ success: true, message: "All data and project files cleared. Agents preserved." });
   } catch (err) {
     res.status(500).json({ error: "Reset failed" });
   }
