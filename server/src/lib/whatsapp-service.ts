@@ -197,11 +197,6 @@ async function executeAction(action: Record<string, unknown>, io?: { emit: (e: s
       const { scanWorkspace } = await import("../lib/scanner.js");
       const scanDirs = [
         join(homedir(), "Projects"),
-        join(homedir(), "Desenvolvimento", "Projects"),
-        join(homedir(), "Development"),
-        join(homedir(), "dev"),
-        join(homedir(), "repos"),
-        join(homedir(), "code"),
       ].filter(d => existsSync(d));
 
       const existingPaths = new Set(

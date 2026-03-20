@@ -11,7 +11,7 @@ AgentHub Local is a **standalone AI development orchestration** tool that runs e
 - Express 5 server on **dynamic port** (written to ~/.agenthub-local/port)
 - SQLite database via better-sqlite3 + Drizzle ORM at ~/.agenthub-local/db.sqlite
 - Uses **Claude Code CLI token** (from ~/.claude/.credentials.json) for AI
-- Scans local project directories to import (~/Projects, ~/Development, ~/dev, ~/repos, ~/code)
+- Scans ~/Projects for local projects to import
 - Pre-built React SPA served as static files
 - Socket.io for real-time events (WhatsApp QR codes, status updates)
 

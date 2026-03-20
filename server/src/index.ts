@@ -91,12 +91,6 @@ app.get("/api/projects/local-scan", async (_req, res) => {
     const homePath = homedir();
     const scanDirs = [
       join(homePath, "Projects"),
-      join(homePath, "Desenvolvimento", "Projects"),
-      join(homePath, "Development"),
-      join(homePath, "dev"),
-      join(homePath, "repos"),
-      join(homePath, "workspace"),
-      join(homePath, "code"),
     ].filter(d => existsSync(d));
 
     const allRepos: unknown[] = [];
@@ -570,10 +564,11 @@ app.get("/api/plans/my-usage", (_req, res) => {
 // Factory reset — wipe all data except agents, delete project files from disk
 app.post("/api/admin/factory-reset", (_req, res) => {
   try {
-    // Delete project files from disk
+    // Delete project files from disk — only within ~/Projects for safety
+    const safeDir = join(homedir(), "Projects");
     const allProjects = db.select().from(schema.projects).all();
     for (const p of allProjects) {
-      if (p.path && existsSync(p.path)) {
+      if (p.path && p.path.startsWith(safeDir) && existsSync(p.path)) {
         try { rmSync(p.path, { recursive: true, force: true }); } catch { /* best-effort */ }
       }
     }
