@@ -153,7 +153,7 @@ async function executeAction(action: Record<string, unknown>, io?: { emit: (e: s
       };
       db.insert(schema.tasks).values(task).run();
       if (io) {
-        io.emit("task:created", task);
+        io.emit("task:created", { task });
         io.emit("task:status", { taskId: task.id, status: task.status, projectId: task.projectId });
       }
       return `Task criada: *${title}* (${task.priority}) no projeto *${projectName}*`;
@@ -189,7 +189,7 @@ async function executeAction(action: Record<string, unknown>, io?: { emit: (e: s
       db.update(schema.tasks).set({ status: newStatus, updatedAt })
         .where(eq(schema.tasks.id, task.id)).run();
       const updatedTask = db.select().from(schema.tasks).where(eq(schema.tasks.id, task.id)).get();
-      if (io && updatedTask) io.emit("task:updated", updatedTask);
+      if (io && updatedTask) io.emit("task:updated", { task: updatedTask });
       return `Task *${task.title}* atualizada: ${task.status} → ${newStatus}`;
     }
 
