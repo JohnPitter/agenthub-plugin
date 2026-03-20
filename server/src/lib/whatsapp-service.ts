@@ -37,9 +37,13 @@ async function executeAction(action: Record<string, unknown>, io?: { emit: (e: s
 
       if (existsSync(projectPath)) return `Projeto "${name}" ja existe.`;
 
-      const stackArr = Array.isArray(action.stack) && action.stack.length > 0
-        ? action.stack as string[]
-        : ["nodejs"];
+      // Accept stack as array or string
+      let stackArr: string[] = ["nodejs"];
+      if (Array.isArray(action.stack) && action.stack.length > 0) {
+        stackArr = action.stack as string[];
+      } else if (typeof action.stack === "string" && action.stack.trim()) {
+        stackArr = action.stack.split(",").map((s: string) => s.trim()).filter(Boolean);
+      }
 
       mkdirSync(projectPath, { recursive: true });
       writeFileSync(join(projectPath, "package.json"), JSON.stringify({

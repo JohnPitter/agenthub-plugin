@@ -319,7 +319,11 @@ app.post("/api/projects/create", async (req, res) => {
     id: nanoid(),
     name: name.trim(),
     path: projectPath,
-    stack: JSON.stringify(Array.isArray(stack) && stack.length > 0 ? stack : ["nodejs"]),
+    stack: JSON.stringify(
+      Array.isArray(stack) && stack.length > 0 ? stack
+      : typeof stack === "string" && stack.trim() ? stack.split(",").map((s: string) => s.trim()).filter(Boolean)
+      : ["nodejs"]
+    ),
     description: description?.trim() || null,
     githubUrl,
     status: "active",
