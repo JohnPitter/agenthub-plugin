@@ -3,7 +3,7 @@ import { db, tasks, taskLogs, projects, integrations } from "../db.js";
 import { eq, and, desc } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { execFileSync } from "child_process";
-import { existsSync } from "fs";
+import { existsSync, readFileSync as fsReadFileSync } from "fs";
 import { join } from "path";
 import https from "https";
 
@@ -393,6 +393,103 @@ router.delete("/:id", (req, res) => {
   db.delete(taskLogs).where(eq(taskLogs.taskId, req.params.id)).run();
   db.delete(tasks).where(eq(tasks.id, req.params.id)).run();
   res.json({ success: true });
+});
+
+// GET /:id/changes — get git changes for task
+router.get("/:id/changes", (req, res) => {
+  const task = db.select().from(tasks).where(eq(tasks.id, req.params.id)).get();
+  if (!task) return res.status(404).json({ error: "task not found" });
+
+  const project = db.select().from(projects).where(eq(projects.id, task.projectId)).get();
+  if (!project) return res.json({ commits: [] });
+
+  const projectPath = project.path;
+  if (!existsSync(join(projectPath, ".git"))) return res.json({ commits: [] });
+
+  try {
+    // Get recent commits (last 10)
+    const logOutput = execFileSync("git", [
+      "log", "--format=%H%n%h%n%s%n%an%n%aI", "-10"
+    ], { cwd: projectPath, timeout: 5000, encoding: "utf-8" });
+
+    const lines = logOutput.trim().split("\n");
+    const commits: { hash: string; shortHash: string; message: string; author: string; date: string; files: { path: string; original: string; modified: string; language: string }[] }[] = [];
+
+    for (let i = 0; i < lines.length; i += 5) {
+      if (!lines[i]) continue;
+      const hash = lines[i];
+      const shortHash = lines[i + 1];
+      const message = lines[i + 2];
+      const author = lines[i + 3];
+      const date = lines[i + 4];
+
+      // Get changed files for this commit
+      let changedFiles: string[] = [];
+      try {
+        const diffOutput = execFileSync("git", [
+          "diff-tree", "--no-commit-id", "-r", "--name-only", hash
+        ], { cwd: projectPath, timeout: 5000, encoding: "utf-8" });
+        changedFiles = diffOutput.trim().split("\n").filter(Boolean);
+      } catch { /* ignore */ }
+
+      const files = changedFiles.slice(0, 20).map(filePath => {
+        let original = "";
+        let modified = "";
+        const ext = filePath.split(".").pop() || "";
+        const langMap: Record<string, string> = {
+          ts: "typescript", tsx: "typescript", js: "javascript", jsx: "javascript",
+          py: "python", rs: "rust", go: "go", java: "java", rb: "ruby",
+          css: "css", html: "html", json: "json", md: "markdown", yml: "yaml", yaml: "yaml",
+        };
+
+        try {
+          original = execFileSync("git", ["show", `${hash}^:${filePath}`], { cwd: projectPath, timeout: 3000, encoding: "utf-8" });
+        } catch { original = ""; }
+
+        try {
+          modified = execFileSync("git", ["show", `${hash}:${filePath}`], { cwd: projectPath, timeout: 3000, encoding: "utf-8" });
+        } catch { modified = ""; }
+
+        return { path: filePath, original, modified, language: langMap[ext] || ext };
+      });
+
+      commits.push({ hash, shortHash, message, author, date, files });
+    }
+
+    // Also add uncommitted changes if any
+    try {
+      const statusOutput = execFileSync("git", ["status", "--porcelain"], { cwd: projectPath, timeout: 5000, encoding: "utf-8" });
+      const uncommittedFiles = statusOutput.trim().split("\n").filter(Boolean).map(l => l.slice(3));
+
+      if (uncommittedFiles.length > 0) {
+        const files = uncommittedFiles.slice(0, 20).map(filePath => {
+          let original = "";
+          let modified = "";
+          const ext = filePath.split(".").pop() || "";
+          const langMap: Record<string, string> = {
+            ts: "typescript", tsx: "typescript", js: "javascript", jsx: "javascript",
+            py: "python", json: "json", md: "markdown", css: "css", html: "html",
+          };
+
+          try { original = execFileSync("git", ["show", `HEAD:${filePath}`], { cwd: projectPath, timeout: 3000, encoding: "utf-8" }); } catch { /* new file */ }
+          try {
+            const fullPath = join(projectPath, filePath);
+            if (existsSync(fullPath)) {
+              modified = fsReadFileSync(fullPath, "utf-8");
+            }
+          } catch { /* deleted file */ }
+
+          return { path: filePath, original, modified, language: langMap[ext] || ext };
+        });
+
+        commits.unshift({ hash: "uncommitted", shortHash: "uncommitted", message: "Uncommitted changes", author: "", date: new Date().toISOString(), files });
+      }
+    } catch { /* no uncommitted changes */ }
+
+    res.json({ commits });
+  } catch {
+    res.json({ commits: [] });
+  }
 });
 
 // GET /:id/logs — get task logs
