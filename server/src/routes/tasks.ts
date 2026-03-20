@@ -3,8 +3,9 @@ import { db, tasks, taskLogs, projects, integrations } from "../db.js";
 import { eq, and, desc } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { execFileSync } from "child_process";
-import { existsSync, readFileSync as fsReadFileSync } from "fs";
+import { existsSync, readFileSync as fsReadFileSync, rmSync } from "fs";
 import { join } from "path";
+import { homedir } from "os";
 import https from "https";
 
 // ─── GitHub API helper (native https, no external deps) ─────
@@ -187,6 +188,62 @@ async function autoCommitAndPR(taskId: string, io: { emit: (event: string, data:
       body: `Não foi possível criar o PR. Status: ${prResult.status}`,
       link: null, createdAt: new Date().toISOString(),
     });
+  }
+}
+
+// ─── Cleanup task workspace (tmp folder + git branch + GitHub PR) ─────
+
+async function cleanupTaskWorkspace(
+  task: { id: string; projectId: string; branch: string | null },
+  reason: "done" | "cancelled",
+) {
+  const project = db.select().from(projects).where(eq(projects.id, task.projectId)).get();
+  if (!project) return;
+
+  const projectPath = project.path;
+
+  // 1. Delete tmp folder (non-git projects)
+  const tmpDir = join(homedir(), "Projects", ".agenthub-tasks", task.id);
+  if (existsSync(tmpDir)) {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+  }
+
+  // 2. Delete git branch (if exists)
+  if (task.branch && existsSync(join(projectPath, ".git"))) {
+    try {
+      // Delete local branch
+      execFileSync("git", ["branch", "-D", task.branch], { cwd: projectPath, timeout: 5000, stdio: "pipe" });
+    } catch { /* branch may not exist locally */ }
+
+    try {
+      // Delete remote branch
+      execFileSync("git", ["push", "origin", "--delete", task.branch], { cwd: projectPath, timeout: 30000, stdio: "pipe" });
+    } catch { /* no remote or branch doesn't exist remotely */ }
+  }
+
+  // 3. Close GitHub PR if cancelled
+  if (reason === "cancelled" && task.branch) {
+    const ghIntegration = db.select().from(integrations).where(eq(integrations.type, "github")).get();
+    const ghToken = ghIntegration?.config ? JSON.parse(ghIntegration.config).token : null;
+    if (!ghToken) return;
+
+    // Get remote URL to extract owner/repo
+    let remoteUrl = "";
+    try {
+      remoteUrl = execFileSync("git", ["config", "--get", "remote.origin.url"], { cwd: projectPath, timeout: 5000, encoding: "utf-8" }).trim();
+    } catch { return; }
+
+    const match = remoteUrl.match(/github\.com[:/]([^/]+)\/([^/.]+)/);
+    if (!match) return;
+    const [, owner, repo] = match;
+
+    // Find open PR for this branch
+    const prSearch = await githubApi("GET", `/repos/${owner}/${repo}/pulls?head=${owner}:${task.branch}&state=open`, ghToken);
+    if (prSearch.status === 200 && Array.isArray(prSearch.data) && prSearch.data.length > 0) {
+      const prNumber = (prSearch.data[0] as { number: number }).number;
+      // Close the PR
+      await githubApi("PATCH", `/repos/${owner}/${repo}/pulls/${prNumber}`, ghToken, { state: "closed" });
+    }
   }
 }
 
@@ -374,7 +431,16 @@ router.patch("/:id", (req, res) => {
     const taskIdForGit = req.params.id;
     const ioGit = req.app.get("io") ?? null;
     res.json({ task: updated });
-    autoCommitAndPR(taskIdForGit, ioGit).catch(() => {});
+    autoCommitAndPR(taskIdForGit, ioGit).then(() => {
+      cleanupTaskWorkspace(task, "done");
+    }).catch(() => {});
+    return;
+  }
+
+  // Cleanup when task is cancelled
+  if (status === "cancelled" && status !== task.status) {
+    res.json({ task: updated });
+    cleanupTaskWorkspace(task, "cancelled").catch(() => {});
     return;
   }
 
