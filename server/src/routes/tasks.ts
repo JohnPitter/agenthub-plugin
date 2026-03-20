@@ -488,14 +488,18 @@ router.get("/:id/changes", (req, res) => {
 
     // Also add uncommitted changes if any
     try {
-      const statusOutput = execFileSync("git", ["status", "--porcelain"], { cwd: projectPath, timeout: 5000, encoding: "utf-8" });
-      const uncommittedFiles = statusOutput.trim().split("\n").filter(Boolean).map(line => {
-        // git status --porcelain: "XY path" or "XY path -> renamed" — strip status prefix
-        let filePath = line.slice(3);
-        // Handle renames: "old -> new" — use the new path
-        const arrowIdx = filePath.indexOf(" -> ");
-        if (arrowIdx !== -1) filePath = filePath.slice(arrowIdx + 4);
+      // Use git diff for tracked changes + git ls-files for untracked
+      // This avoids -uall which lists thousands of node_modules files
+      const trackedOutput = execFileSync("git", ["diff", "--name-only", "HEAD"], { cwd: projectPath, timeout: 5000, encoding: "utf-8" });
+      const untrackedOutput = execFileSync("git", ["ls-files", "--others", "--exclude-standard"], { cwd: projectPath, timeout: 5000, encoding: "utf-8" });
+      const allChangedPaths = [
+        ...trackedOutput.trim().split("\n").filter(Boolean),
+        ...untrackedOutput.trim().split("\n").filter(Boolean),
+      ].filter(p => !p.startsWith("node_modules/") && !p.startsWith(".git/"));
+
+      const uncommittedFiles = allChangedPaths.map(fp => {
         // Remove surrounding quotes (git quotes paths with special chars/spaces)
+        let filePath = fp;
         if (filePath.startsWith('"') && filePath.endsWith('"')) {
           filePath = filePath.slice(1, -1).replace(/\\"/g, '"');
         }
