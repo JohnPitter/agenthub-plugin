@@ -1,9 +1,9 @@
 import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import {
   Search, Plus, Loader2, Check, FolderOpen, FolderPlus, ListTodo, Users,
-  ChevronLeft, ChevronRight, Github, Star, Lock, Globe, AlertTriangle, ExternalLink,
+  ChevronLeft, ChevronRight, Github, Star, Lock, Globe, AlertTriangle, ExternalLink, Settings,
 } from "lucide-react";
 import { useWorkspaceStore } from "../stores/workspace-store";
 import { api, formatRelativeTime } from "../lib/utils";
@@ -74,7 +74,7 @@ export function ProjectsPage() {
     setLoadingRepos(true);
     setRepoError(false);
     setRepoNeedsReauth(false);
-    api<{ repos: EnrichedRepo[] }>("/projects/github-repos")
+    api<{ repos: EnrichedRepo[] }>("/projects/local-scan")
       .then(({ repos }) => setGithubRepos(repos))
       .catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : "";
@@ -515,13 +515,13 @@ export function ProjectsPage() {
                       {t("dashboard.githubExpiredDesc")}
                     </p>
                   </div>
-                  <a
-                    href="/api/auth/github"
+                  <Link
+                    to="/settings"
                     className="btn-primary flex shrink-0 items-center gap-1.5 rounded-md px-4 py-2 text-[12px] font-semibold text-white"
                   >
-                    <Github className="h-3.5 w-3.5" />
-                    {t("dashboard.reconnectGithub")}
-                  </a>
+                    <Settings className="h-3.5 w-3.5" />
+                    {t("settings.integrations")}
+                  </Link>
                 </div>
               ) : repoError ? (
                 <div className="card-glow flex items-center gap-4 p-5">

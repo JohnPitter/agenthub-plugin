@@ -256,7 +256,7 @@ export function AgentConfigDialog({ agent, onSave, onClose }: AgentConfigDialogP
             </select>
             {enabledModels.length === 0 && (
               <p className="mt-1.5 text-[11px] text-neutral-fg3">
-                Modelos configurados pelo admin via OpenRouter
+                Modelos disponíveis via Claude Code CLI
               </p>
             )}
           </div>
