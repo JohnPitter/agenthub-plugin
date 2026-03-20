@@ -1,5 +1,9 @@
 import { query, type Options, type SDKResultMessage, type SDKAssistantMessage, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { nanoid } from "nanoid";
+import { execFileSync } from "child_process";
+import { existsSync, mkdirSync, cpSync, rmSync } from "fs";
+import { join } from "path";
+import { homedir } from "os";
 import { db, schema } from "../db.js";
 import { eq } from "drizzle-orm";
 
@@ -53,9 +57,7 @@ export async function executeTask(taskId: string, io: ExecutionIO): Promise<void
 - Description: ${task.description || "N/A"}
 - Priority: ${task.priority}
 - Category: ${task.category}
-- Project: ${project.name} (${project.path})
-
-Complete this task using the available tools. Work in the project directory.`;
+- Project: ${project.name} (${project.path})`;
 
   // Map agent's allowed tools to SDK tool names
   const allowedTools: string[] = agent.allowedTools ? JSON.parse(agent.allowedTools) : [];
@@ -65,6 +67,57 @@ Complete this task using the available tools. Work in the project directory.`;
   // Resolve permission mode
   const permissionMode = (agent.permissionMode as Options["permissionMode"]) || "acceptEdits";
   const isBypass = permissionMode === "bypassPermissions";
+
+  // ─── Task Isolation: branch (git) or tmp folder (no git) ───
+  const isGitRepo = existsSync(join(project.path, ".git"));
+  const branchName = `task/${taskId.slice(0, 12)}`;
+  let workDir = project.path;
+  let tmpDir: string | null = null;
+  let originalBranch: string | null = null;
+
+  if (isGitRepo) {
+    // Git project → create branch for this task
+    try {
+      originalBranch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: project.path, timeout: 5000, encoding: "utf-8" }).trim();
+      // Stash any uncommitted work
+      try { execFileSync("git", ["stash", "--include-untracked"], { cwd: project.path, timeout: 5000 }); } catch { /* nothing to stash */ }
+      // Create and checkout task branch
+      try {
+        execFileSync("git", ["checkout", "-b", branchName], { cwd: project.path, timeout: 5000 });
+      } catch {
+        // Branch may already exist (re-execution), just checkout
+        execFileSync("git", ["checkout", branchName], { cwd: project.path, timeout: 5000 });
+      }
+      db.update(schema.tasks).set({ branch: branchName, updatedAt: Date.now() }).where(eq(schema.tasks.id, taskId)).run();
+    } catch (err) {
+      console.error(`[TaskExecutor] Branch creation failed: ${err}`);
+      // Fall back to working on current branch
+    }
+  } else {
+    // No git → create temporary copy of project
+    const tasksDir = join(homedir(), "Projects", ".agenthub-tasks");
+    tmpDir = join(tasksDir, taskId);
+    if (!existsSync(tasksDir)) mkdirSync(tasksDir, { recursive: true });
+    if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true });
+    try {
+      cpSync(project.path, tmpDir, {
+        recursive: true,
+        filter: (src) => !src.includes("node_modules") && !src.includes(".git"),
+      });
+      workDir = tmpDir;
+    } catch (err) {
+      console.error(`[TaskExecutor] Temp copy failed: ${err}`);
+      // Fall back to original directory
+    }
+  }
+
+  // Add workspace info to prompt
+  if (isGitRepo) {
+    systemPrompt += `\n- Branch: ${branchName} (isolated from main branch)`;
+  } else if (tmpDir) {
+    systemPrompt += `\n- Workspace: isolated copy at ${tmpDir}`;
+  }
+  systemPrompt += `\n\nComplete this task using the available tools. Your changes are isolated and won't affect the main project until approved.`;
 
   // Advance to in_progress
   db.update(schema.tasks)
@@ -87,7 +140,7 @@ Complete this task using the available tools. Work in the project directory.`;
 
   try {
     const options: Options = {
-      cwd: project.path,
+      cwd: workDir,
       tools: sdkTools,
       allowedTools: sdkTools,
       systemPrompt,
@@ -143,6 +196,30 @@ Complete this task using the available tools. Work in the project directory.`;
     detail: `in_progress → ${finalStatus}: ${resultText.slice(0, 200)}`,
     createdAt: Date.now(),
   }).run();
+
+  // ─── Cleanup: switch back to original branch or handle tmp dir ───
+  if (isGitRepo && originalBranch) {
+    try {
+      // Commit any changes on the task branch
+      try {
+        execFileSync("git", ["add", "-A"], { cwd: project.path, timeout: 5000 });
+        execFileSync("git", ["commit", "-m", `task: ${task.title}`], { cwd: project.path, timeout: 10000 });
+      } catch { /* nothing to commit */ }
+      // Switch back to original branch
+      execFileSync("git", ["checkout", originalBranch], { cwd: project.path, timeout: 5000 });
+      // Restore stashed work
+      try { execFileSync("git", ["stash", "pop"], { cwd: project.path, timeout: 5000 }); } catch { /* no stash */ }
+    } catch (err) {
+      console.error(`[TaskExecutor] Branch cleanup failed: ${err}`);
+    }
+  } else if (tmpDir && existsSync(tmpDir)) {
+    // For non-git projects, keep the tmp dir as the task workspace
+    // Log the location for reference
+    db.insert(schema.taskLogs).values({
+      id: nanoid(), taskId, agentId, action: "workspace",
+      detail: `Task workspace: ${tmpDir}`, createdAt: Date.now(),
+    }).run();
+  }
 }
 
 // ---------------------------------------------------------------------------
