@@ -514,8 +514,9 @@ WHEN CREATING A PROJECT:
 WHEN CREATING A TASK:
 1. If there are multiple projects, ask which project
 2. Ask for the task title
-3. Ask for priority (low, medium, high, urgent, critical)
-4. Only then execute create_task
+3. Ask for a brief description of what needs to be done
+4. Ask for priority (low, medium, high, urgent, critical)
+5. Only then execute create_task with title, description, and priority
 
 TASK STATUS MACHINE (use ONLY these exact status names in English):
 created → pending → assigned → in_progress → review → done
