@@ -272,4 +272,48 @@ router.post("/integrations/github/disconnect", (_req, res) => {
   res.json({ success: true, status: "disconnected" });
 });
 
+/**
+ * Groq integration — API key for Whisper audio transcription
+ */
+router.get("/integrations/groq/status", (_req, res) => {
+  const integration = db.select().from(schema.integrations)
+    .where(eq(schema.integrations.type, "groq")).get();
+  if (!integration) return res.json({ status: "disconnected", hasKey: false });
+  const config = integration.config ? JSON.parse(integration.config) : {};
+  res.json({ status: config.apiKey ? "connected" : "disconnected", hasKey: !!config.apiKey });
+});
+
+router.post("/integrations/groq/connect", (req, res) => {
+  const { apiKey } = req.body;
+  if (!apiKey?.trim()) return res.status(400).json({ error: "API key required" });
+
+  const existing = db.select().from(schema.integrations)
+    .where(eq(schema.integrations.type, "groq")).get();
+  const now = Date.now();
+
+  if (existing) {
+    db.update(schema.integrations).set({
+      config: JSON.stringify({ apiKey: apiKey.trim() }),
+      status: "connected", updatedAt: now,
+    }).where(eq(schema.integrations.id, existing.id)).run();
+  } else {
+    db.insert(schema.integrations).values({
+      id: nanoid(), type: "groq", status: "connected",
+      config: JSON.stringify({ apiKey: apiKey.trim() }),
+      createdAt: now, updatedAt: now,
+    }).run();
+  }
+  res.json({ status: "connected" });
+});
+
+router.post("/integrations/groq/disconnect", (_req, res) => {
+  const existing = db.select().from(schema.integrations)
+    .where(eq(schema.integrations.type, "groq")).get();
+  if (existing) {
+    db.update(schema.integrations).set({ status: "disconnected", config: null, updatedAt: Date.now() })
+      .where(eq(schema.integrations.id, existing.id)).run();
+  }
+  res.json({ success: true });
+});
+
 export default router;

@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
-import { FolderOpen, Palette, Info, ExternalLink, Plug, User, ChevronDown, ChevronUp, Check, Globe, Zap, AlertTriangle, Loader2, Github, Trash2 } from "lucide-react";
+import { FolderOpen, Palette, Info, ExternalLink, Plug, User, ChevronDown, ChevronUp, Check, Globe, Zap, AlertTriangle, Loader2, Github, Trash2, Mic, XCircle } from "lucide-react";
 import { CommandBar } from "../components/layout/command-bar";
 import { api, cn } from "../lib/utils";
 import { WhatsAppConfig } from "../components/integrations/whatsapp-config";
@@ -395,6 +395,99 @@ function FactoryReset() {
   );
 }
 
+function GroqIntegration() {
+  const { t } = useTranslation();
+  const [status, setStatus] = useState("disconnected");
+  const [apiKey, setApiKey] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    api<{ status: string; hasKey: boolean }>("/integrations/groq/status")
+      .then((d) => { setStatus(d.status); if (d.hasKey) setApiKey("••••••••"); })
+      .catch(() => {});
+  }, []);
+
+  const connect = async () => {
+    if (!apiKey.trim() || apiKey.startsWith("•")) return;
+    setLoading(true);
+    try {
+      await api("/integrations/groq/connect", { method: "POST", body: JSON.stringify({ apiKey: apiKey.trim() }) });
+      setStatus("connected");
+      setApiKey("••••••••");
+    } catch {} finally { setLoading(false); }
+  };
+
+  const disconnect = async () => {
+    setLoading(true);
+    try {
+      await api("/integrations/groq/disconnect", { method: "POST" });
+      setStatus("disconnected");
+      setApiKey("");
+    } catch {} finally { setLoading(false); }
+  };
+
+  return (
+    <div className="rounded-xl border border-stroke bg-neutral-bg2 p-6">
+      <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-purple-light">
+            <Mic className="h-5 w-5 text-purple" />
+          </div>
+          <div>
+            <h3 className="text-[14px] font-semibold text-neutral-fg1">Groq Whisper</h3>
+            <p className="text-[12px] text-neutral-fg3">Transcrição de áudio do WhatsApp (gratuito)</p>
+          </div>
+        </div>
+        <div className={cn("flex items-center gap-2 text-[12px] font-medium", status === "connected" ? "text-success" : "text-neutral-fg3")}>
+          <span className={cn("h-2 w-2 rounded-full", status === "connected" ? "bg-success" : "bg-neutral-fg-disabled")} />
+          {status === "connected" ? "Conectado" : "Desconectado"}
+        </div>
+      </div>
+
+      {status !== "connected" && (
+        <div className="mb-4">
+          <label className="block text-[12px] font-medium text-neutral-fg2 mb-2">API Key</label>
+          <input
+            type="password"
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+            placeholder="gsk_xxxxxxxxxxxx"
+            className="w-full rounded-lg border border-stroke bg-neutral-bg1 px-3 py-2 text-[13px] text-neutral-fg1 placeholder:text-neutral-fg3/50 focus:border-primary focus:outline-none"
+          />
+          <p className="mt-1.5 text-[11px] text-neutral-fg3">
+            Crie grátis em{" "}
+            <a href="https://console.groq.com/keys" target="_blank" rel="noopener noreferrer" className="text-brand hover:underline">console.groq.com/keys</a>
+          </p>
+        </div>
+      )}
+
+      {status === "connected" && (
+        <div className="mb-4 flex items-center gap-3 rounded-lg border border-success/20 bg-success-light p-4">
+          <span className="h-2 w-2 rounded-full bg-success" />
+          <div>
+            <p className="text-[13px] font-medium text-success">Whisper ativo</p>
+            <p className="text-[11px] text-neutral-fg3">Áudios do WhatsApp serão transcritos automaticamente</p>
+          </div>
+        </div>
+      )}
+
+      <div className="flex items-center gap-3">
+        {status !== "connected" ? (
+          <button onClick={connect} disabled={loading || !apiKey.trim() || apiKey.startsWith("•")} className="btn-primary flex items-center gap-2 rounded-lg px-5 py-2.5 text-[13px] font-medium text-white disabled:opacity-50">
+            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Mic className="h-4 w-4" />}
+            Conectar Groq
+          </button>
+        ) : (
+          <button onClick={disconnect} disabled={loading} className="flex items-center gap-2 rounded-lg border border-danger/30 bg-danger-light px-5 py-2.5 text-[13px] font-medium text-danger hover:bg-danger/20 transition-colors">
+            <XCircle className="h-4 w-4" />
+            Desconectar
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function GitHubIntegration() {
   const { t } = useTranslation();
   const [pat, setPat] = useState("");
@@ -593,6 +686,7 @@ export function SettingsPage() {
                 </div>
 
                 <GitHubIntegration />
+                <GroqIntegration />
                 <WhatsAppConfig />
                 <TelegramConfig />
               </div>

@@ -352,12 +352,73 @@ async function executeAction(action: Record<string, unknown>, io?: { emit: (e: s
   }
 }
 
-/** Transcribe audio — Claude API doesn't support audio input, so we return null and let the caller handle fallback */
-async function transcribeAudio(_base64Audio: string): Promise<string | null> {
-  // NOTE: Anthropic API does not support audio input (only PDF documents and images).
-  // To enable audio transcription, add OpenAI Whisper or Google Speech-to-Text.
-  // For now, return null to trigger the "please type" fallback.
-  return null;
+/** Transcribe audio using Groq Whisper (free, fast) */
+async function transcribeAudio(base64Audio: string): Promise<string | null> {
+  // Check for Groq API key in integrations
+  const groqIntegration = db.select().from(schema.integrations)
+    .where(eq(schema.integrations.type, "groq")).get();
+  const groqKey = groqIntegration?.config ? JSON.parse(groqIntegration.config).apiKey : null;
+
+  if (!groqKey) {
+    console.log("[WhatsApp] No Groq API key configured — audio transcription disabled");
+    return null;
+  }
+
+  try {
+    const audioBuffer = Buffer.from(base64Audio, "base64");
+
+    // Groq Whisper via raw HTTP (no SDK type issues)
+    const boundary = `----FormBoundary${Date.now()}`;
+    const parts: Buffer[] = [];
+
+    // File part
+    parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="audio.ogg"\r\nContent-Type: audio/ogg\r\n\r\n`));
+    parts.push(audioBuffer);
+    parts.push(Buffer.from("\r\n"));
+
+    // Model part
+    parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\nwhisper-large-v3-turbo\r\n`));
+
+    // Language part (auto-detect)
+    parts.push(Buffer.from(`--${boundary}--\r\n`));
+
+    const body = Buffer.concat(parts);
+
+    return new Promise((resolve) => {
+      const req = https.request({
+        hostname: "api.groq.com",
+        path: "/openai/v1/audio/transcriptions",
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${groqKey}`,
+          "Content-Type": `multipart/form-data; boundary=${boundary}`,
+          "Content-Length": body.length,
+        },
+      }, (res) => {
+        let data = "";
+        res.on("data", (chunk: string) => { data += chunk; });
+        res.on("end", () => {
+          try {
+            const parsed = JSON.parse(data);
+            if (parsed.text) {
+              console.log(`[WhatsApp] Groq transcription: ${parsed.text.slice(0, 100)}`);
+              resolve(parsed.text.trim());
+            } else {
+              console.error("[WhatsApp] Groq error:", data.slice(0, 200));
+              resolve(null);
+            }
+          } catch { resolve(null); }
+        });
+      });
+      req.on("error", () => resolve(null));
+      req.setTimeout(15000, () => { req.destroy(); resolve(null); });
+      req.write(body);
+      req.end();
+    });
+  } catch (err) {
+    console.error("[WhatsApp] Transcription error:", err);
+    return null;
+  }
 }
 
 /** Create Anthropic client using OAuth token from Claude credentials */
