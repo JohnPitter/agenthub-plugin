@@ -787,25 +787,33 @@ REAL-TIME UPDATES:
         // Call Claude API with conversation history
         callClaude(fullPrompt, messages, teamLead.model).then(async (reply) => {
           try {
-            // Parse action JSON from last line
+            // Parse action JSON — scan ALL lines for {"action":...} (not just last line)
             const lines = reply.trim().split("\n");
-            const lastLine = lines[lines.length - 1].trim();
             let actionResult: string | null = null;
+            let actionLineIdx = -1;
 
-            if (lastLine.startsWith("{")) {
-              try {
-                const action = JSON.parse(lastLine);
-                actionResult = await executeAction(action, this._io ?? undefined);
-                // Send text part (without JSON line) + action result
-                const textPart = lines.slice(0, -1).join("\n").trim();
-                const finalReply = textPart
-                  ? `${textPart}\n\n${actionResult}`
-                  : actionResult;
-                await client.sendText(msg.from as string, finalReply);
-              } catch {
-                // Not valid JSON, send as-is
-                await client.sendText(msg.from as string, reply);
+            // Find the line with a JSON action (search from bottom up)
+            for (let li = lines.length - 1; li >= 0; li--) {
+              const line = lines[li].trim();
+              if (line.startsWith("{") && line.includes('"action"')) {
+                try {
+                  const parsed = JSON.parse(line);
+                  if (parsed.action) {
+                    actionResult = await executeAction(parsed, this._io ?? undefined);
+                    actionLineIdx = li;
+                    break;
+                  }
+                } catch { /* not valid JSON, continue searching */ }
               }
+            }
+
+            if (actionResult !== null) {
+              // Send text part (without JSON line) + action result
+              const textPart = lines.filter((_, i) => i !== actionLineIdx).join("\n").trim();
+              const finalReply = textPart
+                ? `${textPart}\n\n${actionResult}`
+                : actionResult;
+              await client.sendText(msg.from as string, finalReply);
             } else {
               await client.sendText(msg.from as string, reply);
             }
