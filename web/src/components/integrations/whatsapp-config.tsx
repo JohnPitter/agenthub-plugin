@@ -1,0 +1,301 @@
+import { useState, useEffect, useCallback } from "react";
+import { useTranslation } from "react-i18next";
+import { Smartphone, Wifi, WifiOff, Loader2, QrCode, RefreshCw, Shield, Check } from "lucide-react";
+import { api } from "../../lib/utils";
+import { getSocket } from "../../lib/socket";
+import { cn } from "../../lib/utils";
+import { useWorkspaceStore } from "../../stores/workspace-store";
+
+type ConnectionStatus = "disconnected" | "connecting" | "connected" | "error";
+
+interface IntegrationStatusEvent {
+  type: "whatsapp" | "telegram";
+  status: ConnectionStatus;
+  qr?: string;
+}
+
+export function WhatsAppConfig() {
+  const { t } = useTranslation();
+  const activeProjectId = useWorkspaceStore((s) => s.activeProjectId);
+  const [status, setStatus] = useState<ConnectionStatus>("disconnected");
+  const [qrCode, setQrCode] = useState<string | null>(null);
+  const [integrationId, setIntegrationId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [allowedNumber, setAllowedNumber] = useState("");
+  const [savedNumber, setSavedNumber] = useState<string | null>(null);
+  const [savingNumber, setSavingNumber] = useState(false);
+
+  // Fetch current status
+  const fetchStatus = useCallback(async () => {
+    try {
+      const data = await api<{
+        status: ConnectionStatus;
+        integrationId: string | null;
+        allowedNumber?: string | null;
+      }>(
+        `/integrations/whatsapp/status${activeProjectId ? `?projectId=${activeProjectId}` : ""}`
+      );
+      setStatus(data.status);
+      setIntegrationId(data.integrationId);
+      if (data.allowedNumber) {
+        setAllowedNumber(data.allowedNumber);
+        setSavedNumber(data.allowedNumber);
+      }
+      // If DB shows error from a previous failed attempt, show error message
+      if (data.status === "error") {
+        setError(t("integrationErrors.prevConnFailed"));
+      }
+      // Reset loading if status is terminal
+      if (data.status !== "connecting") {
+        setLoading(false);
+      }
+    } catch {
+      // Integration might not exist yet
+    }
+  }, [activeProjectId]);
+
+  useEffect(() => {
+    fetchStatus();
+  }, [fetchStatus]);
+
+  // Listen for real-time status updates
+  useEffect(() => {
+    const socket = getSocket();
+
+    const handleStatus = (data: IntegrationStatusEvent) => {
+      if (data.type !== "whatsapp") return;
+      setStatus(data.status);
+      if (data.qr) {
+        setQrCode(data.qr);
+      }
+      if (data.status === "connected") {
+        setQrCode(null);
+        setLoading(false);
+      }
+      if (data.status === "error") {
+        setLoading(false);
+        setError(t("integrationErrors.connFailed"));
+      }
+    };
+
+    socket.on("integration:status", handleStatus);
+    return () => {
+      socket.off("integration:status", handleStatus);
+    };
+  }, []);
+
+  const handleConnect = async () => {
+    setLoading(true);
+    setError(null);
+    setQrCode(null);
+
+    try {
+      const data = await api<{ success: boolean; status: ConnectionStatus; integrationId: string }>(
+        "/integrations/whatsapp/connect",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            ...(activeProjectId ? { projectId: activeProjectId } : {}),
+            allowedNumber: allowedNumber.trim() || undefined,
+          }),
+        }
+      );
+      setStatus(data.status);
+      setIntegrationId(data.integrationId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("whatsapp.connectError"));
+      setLoading(false);
+    }
+  };
+
+  const handleDisconnect = async () => {
+    setLoading(true);
+    setError(null);
+
+    try {
+      await api("/integrations/whatsapp/disconnect", {
+        method: "POST",
+        body: JSON.stringify(activeProjectId ? { projectId: activeProjectId } : {}),
+      });
+      setStatus("disconnected");
+      setQrCode(null);
+      setIntegrationId(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("whatsapp.disconnectError"));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSaveNumber = async () => {
+    setSavingNumber(true);
+    try {
+      await api("/integrations/whatsapp/config", {
+        method: "PUT",
+        body: JSON.stringify({
+          ...(activeProjectId ? { projectId: activeProjectId } : {}),
+          allowedNumber: allowedNumber.trim() || undefined,
+        }),
+      });
+      setSavedNumber(allowedNumber.trim() || null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("whatsapp.saveNumberError"));
+    } finally {
+      setSavingNumber(false);
+    }
+  };
+
+  const numberChanged = allowedNumber.trim() !== (savedNumber || "");
+
+  const statusConfig: Record<ConnectionStatus, { label: string; color: string; icon: typeof Wifi }> = {
+    disconnected: { label: t("whatsapp.disconnected"), color: "text-neutral-fg3", icon: WifiOff },
+    connecting: { label: t("common.loading"), color: "text-warning", icon: Loader2 },
+    connected: { label: t("whatsapp.connected"), color: "text-success", icon: Wifi },
+    error: { label: t("common.error"), color: "text-danger", icon: WifiOff },
+  };
+
+  const currentStatus = statusConfig[status];
+  const StatusIcon = currentStatus.icon;
+
+  return (
+    <div className="rounded-xl border border-stroke bg-neutral-bg2 p-6">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-success-light">
+            <Smartphone className="h-5 w-5 text-success" />
+          </div>
+          <div>
+            <h3 className="text-[14px] font-semibold text-neutral-fg1">WhatsApp</h3>
+            <p className="text-[12px] text-neutral-fg3">{t("whatsapp.communicateViaWhatsApp")}</p>
+          </div>
+        </div>
+
+        <div className={cn("flex items-center gap-2 text-[12px] font-medium", currentStatus.color)}>
+          <StatusIcon className={cn("h-4 w-4", status === "connecting" && "animate-spin")} />
+          {currentStatus.label}
+        </div>
+      </div>
+
+      {/* QR Code area */}
+      {status === "connecting" && qrCode && (
+        <div className="mb-6 flex flex-col items-center gap-4 rounded-lg border border-stroke bg-neutral-bg1 p-6">
+          <div className="flex items-center gap-2 text-[13px] text-neutral-fg2">
+            <QrCode className="h-4 w-4" />
+            {t("whatsapp.scanQrCode")}
+          </div>
+          <div className="rounded-lg bg-white p-4">
+            <img
+              src={qrCode}
+              alt="WhatsApp QR Code"
+              className="h-[200px] w-[200px]"
+            />
+          </div>
+          <p className="text-[11px] text-neutral-fg3 text-center max-w-[280px]">
+            {t("whatsapp.scanQrCodeDesc")}
+          </p>
+        </div>
+      )}
+
+      {/* Connected state */}
+      {status === "connected" && (
+        <div className="mb-6 flex items-center gap-3 rounded-lg border border-success/20 bg-success-light p-4">
+          <Wifi className="h-5 w-5 text-success" />
+          <div>
+            <p className="text-[13px] font-medium text-success">{t("whatsapp.whatsAppConnected")}</p>
+            <p className="text-[11px] text-neutral-fg3">{t("whatsapp.messagesReceived")}</p>
+          </div>
+        </div>
+      )}
+
+      {/* Allowed Number config */}
+      <div className="mb-4">
+        <label className="flex items-center gap-2 text-[12px] font-medium text-neutral-fg2 mb-2">
+          <Shield className="h-3.5 w-3.5" />
+          {t("whatsapp.authorizedNumber")}
+        </label>
+        <div className="flex items-center gap-2">
+          <input
+            type="text"
+            value={allowedNumber}
+            onChange={(e) => setAllowedNumber(e.target.value)}
+            placeholder="5511999999999"
+            className="flex-1 rounded-lg border border-stroke bg-neutral-bg1 px-3 py-2 text-[13px] text-neutral-fg1 placeholder:text-neutral-fg3/50 focus:border-primary focus:outline-none"
+          />
+          {integrationId && (
+            <button
+              onClick={handleSaveNumber}
+              disabled={savingNumber || !numberChanged}
+              className={cn(
+                "flex items-center gap-1.5 rounded-lg px-4 py-2 text-[12px] font-medium transition-colors",
+                numberChanged
+                  ? "bg-primary text-white hover:bg-primary/90"
+                  : "border border-stroke bg-neutral-bg1 text-neutral-fg3",
+              )}
+            >
+              {savingNumber ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : savedNumber === allowedNumber.trim() && savedNumber ? (
+                <Check className="h-3.5 w-3.5" />
+              ) : null}
+              {t("common.save")}
+            </button>
+          )}
+        </div>
+        <p className="mt-1.5 text-[11px] text-neutral-fg3">
+          {t("whatsapp.authorizedNumberDesc")}
+        </p>
+      </div>
+
+      {/* Error message */}
+      {error && (
+        <div className="mb-4 rounded-lg border border-danger/20 bg-danger-light p-3">
+          <p className="text-[12px] text-danger">{error}</p>
+        </div>
+      )}
+
+      {/* Actions */}
+      <div className="flex items-center gap-3">
+        {status === "disconnected" || status === "error" ? (
+          <button
+            onClick={handleConnect}
+            disabled={loading}
+            className="btn-primary flex items-center gap-2 rounded-lg px-5 py-2.5 text-[13px] font-medium text-white disabled:opacity-50"
+          >
+            {loading ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Smartphone className="h-4 w-4" />
+            )}
+            {t("whatsapp.connectWhatsApp")}
+          </button>
+        ) : status === "connecting" ? (
+          <button
+            onClick={handleDisconnect}
+            className="flex items-center gap-2 rounded-lg border border-stroke bg-neutral-bg1 px-5 py-2.5 text-[13px] font-medium text-neutral-fg2 hover:bg-neutral-bg-hover transition-colors"
+          >
+            {t("common.cancel")}
+          </button>
+        ) : (
+          <>
+            <button
+              onClick={handleDisconnect}
+              disabled={loading}
+              className="flex items-center gap-2 rounded-lg border border-danger/30 bg-danger-light px-5 py-2.5 text-[13px] font-medium text-danger hover:bg-danger/20 transition-colors"
+            >
+              <WifiOff className="h-4 w-4" />
+              {t("whatsapp.disconnect")}
+            </button>
+            <button
+              onClick={fetchStatus}
+              className="flex items-center gap-2 rounded-lg border border-stroke bg-neutral-bg1 px-4 py-2.5 text-[13px] font-medium text-neutral-fg2 hover:bg-neutral-bg-hover transition-colors"
+            >
+              <RefreshCw className="h-4 w-4" />
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}

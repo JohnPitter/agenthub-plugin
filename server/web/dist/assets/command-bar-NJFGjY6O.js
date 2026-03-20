@@ -1,1 +1,0 @@
-import{j as e}from"./index-CC6wxQCi.js";function i({children:r,actions:s}){return e.jsxs("div",{className:"glass flex shrink-0 items-center justify-between border-b border-stroke2 py-4 px-8",children:[e.jsx("div",{className:"flex items-center gap-3 min-w-0 text-title",children:r}),s&&e.jsx("div",{className:"flex items-center gap-2 shrink-0",children:s})]})}export{i as C};

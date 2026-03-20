@@ -1,0 +1,368 @@
+import { useState } from "react";
+import { useParams, useNavigate } from "react-router-dom";
+import { useTranslation } from "react-i18next";
+import { FolderOpen, Users, GitBranch, AlertTriangle, RefreshCw, CheckCircle2, Loader2 } from "lucide-react";
+import { AgentAvatar } from "../components/agents/agent-avatar";
+import { useWorkspaceStore } from "../stores/workspace-store";
+import { useNotificationStore } from "../stores/notification-store";
+import { useAgents } from "../hooks/use-agents";
+import { ConfirmDialog } from "../components/ui/confirm-dialog";
+import { useGitStatus } from "../hooks/use-git-status";
+import { CommandBar } from "../components/layout/command-bar";
+import { api, cn, formatRelativeTime } from "../lib/utils";
+
+type SettingsTab = "geral" | "agentes" | "git" | "avancado";
+
+const SETTINGS_TABS: { key: SettingsTab; labelKey: string; icon: typeof FolderOpen }[] = [
+  { key: "geral", labelKey: "settings.general", icon: FolderOpen },
+  { key: "agentes", labelKey: "agents.title", icon: Users },
+  { key: "git", labelKey: "Git", icon: GitBranch },
+  { key: "avancado", labelKey: "settings.about", icon: AlertTriangle },
+];
+
+export function ProjectSettings() {
+  const { t } = useTranslation();
+  const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
+  const projects = useWorkspaceStore((s) => s.projects);
+  const removeProject = useWorkspaceStore((s) => s.removeProject);
+  const addToast = useNotificationStore((s) => s.addToast);
+  const project = projects.find((p) => p.id === id);
+  const { agents, toggleAgent } = useAgents();
+  const { status, remoteStatus, lastCommit, config, isGitRepo, loading, initRepo, updateConfig } = useGitStatus(id);
+  const [showArchiveDialog, setShowArchiveDialog] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [initializing, setInitializing] = useState(false);
+  const [activeTab, setActiveTab] = useState<SettingsTab>("geral");
+  const [gitConfigForm, setGitConfigForm] = useState({
+    remoteUrl: "",
+    defaultBranch: "main",
+  });
+
+  const handleArchive = async () => {
+    if (!id) return;
+
+    try {
+      await api(`/projects/${id}`, { method: "DELETE" });
+      removeProject(id);
+      addToast("success", t("projectSettings.archived"), t("projectSettings.archivedDesc"));
+      navigate("/");
+    } catch {
+      addToast("error", t("projectSettings.archiveError"), t("projectSettings.archiveErrorDesc"));
+    }
+  };
+
+  if (!project) {
+    return <div className="p-10 text-neutral-fg2">{t("project.notFound")}</div>;
+  }
+
+  return (
+    <div className="flex h-full flex-col">
+      {/* Command Bar */}
+      <CommandBar>
+        <span className="text-[13px] font-semibold text-neutral-fg1">{project.name}</span>
+      </CommandBar>
+
+      <div className="flex flex-1 overflow-hidden">
+        {/* Pill Tab Nav */}
+        <nav className="w-[220px] shrink-0 border-r border-stroke2 bg-neutral-bg-subtle p-4">
+          <div className="space-y-1">
+            {SETTINGS_TABS.map((tab) => {
+              const isActive = activeTab === tab.key;
+              const isDanger = tab.key === "avancado";
+              return (
+                <button
+                  key={tab.key}
+                  onClick={() => setActiveTab(tab.key)}
+                  className={cn(
+                    "flex w-full items-center gap-2.5 rounded-xl px-4 py-2.5 text-[13px] font-medium transition-all duration-200",
+                    isActive && isDanger
+                      ? "bg-danger-light text-danger"
+                      : isActive
+                      ? "bg-gradient-to-r from-brand-light to-transparent text-brand shadow-xs"
+                      : "text-neutral-fg2 hover:bg-neutral-bg-hover hover:text-neutral-fg1",
+                  )}
+                >
+                  <tab.icon className={cn("h-4 w-4", isActive && (isDanger ? "text-danger" : "text-brand"))} />
+                  {t(tab.labelKey)}
+                </button>
+              );
+            })}
+          </div>
+        </nav>
+
+        {/* Content */}
+        <div className="flex-1 overflow-y-auto p-10">
+          <div className="max-w-xl">
+
+            {/* Geral */}
+            {activeTab === "geral" && (
+              <div className="flex flex-col gap-6 animate-fade-up">
+                <div className="card-glow p-8">
+                  <h3 className="text-title text-neutral-fg1 mb-1">{t("settings.workspace")}</h3>
+                  <p className="text-[12px] text-neutral-fg3 mb-6">{t("settings.workspaceDesc")}</p>
+                  <div className="rounded-lg bg-neutral-bg3 border border-stroke px-4 py-3 font-mono text-[13px] text-neutral-fg2">
+                    {project.path}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Agentes */}
+            {activeTab === "agentes" && (
+              <div className="flex flex-col gap-6 animate-fade-up">
+                <div>
+                  <h3 className="text-title text-neutral-fg1 mb-1">{t("agents.team")}</h3>
+                  <p className="text-[12px] text-neutral-fg3 mb-6">{t("agents.configure")}</p>
+                </div>
+                <div className="flex flex-col divide-y divide-stroke2 card-glow overflow-hidden">
+                  {agents.filter((a) => a.role !== "receptionist").map((agent) => (
+                    <div
+                      key={agent.id}
+                      className="flex items-center justify-between px-6 py-4"
+                    >
+                      <div className="flex items-center gap-3">
+                        <AgentAvatar name={agent.name} avatar={agent.avatar} color={agent.color} size="sm" />
+                        <div>
+                          <p className="text-[13px] font-semibold text-neutral-fg1">{agent.name}</p>
+                          <p className="text-[11px] text-neutral-fg3">{t(`roles.${agent.role}`)}</p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => toggleAgent(agent.id)}
+                        className={cn(
+                          "relative h-5 w-9 rounded-full transition-all duration-200",
+                          agent.isActive ? "bg-gradient-to-r from-brand to-purple shadow-brand" : "bg-stroke",
+                        )}
+                      >
+                        <span
+                          className={cn(
+                            "absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-all duration-200",
+                            agent.isActive && "left-[18px]",
+                          )}
+                        />
+                      </button>
+                    </div>
+                  ))}
+                  {agents.length === 0 && (
+                    <div className="px-6 py-8 text-center text-[13px] text-neutral-fg-disabled">
+                      {t("agents.noAgents")}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Git */}
+            {activeTab === "git" && (
+              <div className="flex flex-col gap-6 animate-fade-up">
+                <div>
+                  <h3 className="text-title text-neutral-fg1 mb-1">Git</h3>
+                  <p className="text-[12px] text-neutral-fg3 mb-6">{t("projectSettings.gitDesc")}</p>
+                </div>
+
+                {loading ? (
+                  <div className="card-glow px-6 py-8 text-center text-[13px] text-neutral-fg3">
+                    {t("projectSettings.loadingGit")}
+                  </div>
+                ) : !isGitRepo ? (
+                  <div className="card-glow px-6 py-8 text-center">
+                    {initializing ? (
+                      <>
+                        <Loader2 className="h-6 w-6 animate-spin text-brand mx-auto mb-3" />
+                        <p className="text-[13px] text-neutral-fg2 font-medium mb-1">{t("settings.initializingRepo")}</p>
+                        <p className="text-[11px] text-neutral-fg3">{t("settings.initializingRepoDesc")}</p>
+                      </>
+                    ) : (
+                      <>
+                        <p className="text-[13px] text-neutral-fg3 mb-4">{t("projectSettings.gitNotInit")}</p>
+                        <button
+                          onClick={async () => {
+                            setInitializing(true);
+                            try {
+                              await initRepo();
+                              addToast("success", t("projectSettings.gitInitialized"), t("projectSettings.gitInitializedDesc"));
+                            } catch {
+                              addToast("error", t("projectSettings.initError"), t("projectSettings.initErrorDesc"));
+                            } finally {
+                              setInitializing(false);
+                            }
+                          }}
+                          className="btn-primary rounded-lg px-5 py-2.5 text-[12px] font-semibold text-white"
+                        >
+                          {t("projectSettings.initRepo")}
+                        </button>
+                      </>
+                    )}
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-5">
+                    {/* Git Status */}
+                    <div className="card-glow p-6">
+                      <div className="flex items-center justify-between mb-4">
+                        <div className="flex items-center gap-2">
+                          <span className="text-label">{t("projectSettings.currentBranch")}</span>
+                          <span className="rounded-full bg-purple-light px-2.5 py-0.5 text-[11px] font-semibold text-purple">
+                            {status?.branch}
+                          </span>
+                        </div>
+                        {status && (status.ahead > 0 || status.behind > 0) && (
+                          <div className="text-[11px] text-neutral-fg3">
+                            {status.ahead > 0 && `↑ ${status.ahead}`}
+                            {status.ahead > 0 && status.behind > 0 && " "}
+                            {status.behind > 0 && `↓ ${status.behind}`}
+                          </div>
+                        )}
+                      </div>
+
+                      {lastCommit && (
+                        <div className="border-t border-stroke pt-4">
+                          <div className="text-label mb-2">{t("projectSettings.lastCommit")}</div>
+                          <div className="text-[12px] text-neutral-fg1 font-mono">{lastCommit.sha.slice(0, 7)}</div>
+                          <div className="text-[12px] text-neutral-fg2 mt-1">{lastCommit.message}</div>
+                          <div className="text-[11px] text-neutral-fg3 mt-1">
+                            {lastCommit.author} · {formatRelativeTime(new Date(lastCommit.date))}
+                          </div>
+                        </div>
+                      )}
+
+                      {remoteStatus && (
+                        <div className="border-t border-stroke pt-4 mt-4">
+                          <div className="flex items-center justify-between mb-3">
+                            <div className="text-label">Remote</div>
+                            <button
+                              onClick={async () => {
+                                setSyncing(true);
+                                try {
+                                  const result = await api(`/projects/${id}/git/sync`, { method: "POST" }) as { success: boolean; conflicts?: boolean };
+                                  if (result.conflicts) {
+                                    addToast("warning", t("projectSettings.mergeConflicts"), t("projectSettings.mergeConflictsDesc"));
+                                  } else {
+                                    addToast("success", t("projectSettings.synced"), t("projectSettings.syncedDesc"));
+                                  }
+                                } catch {
+                                  addToast("error", t("projectSettings.syncError"), t("projectSettings.syncErrorDesc"));
+                                } finally {
+                                  setSyncing(false);
+                                }
+                              }}
+                              disabled={syncing}
+                              className="btn-primary flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-semibold text-white disabled:opacity-50"
+                            >
+                              <RefreshCw className={cn("h-3 w-3", syncing && "animate-spin")} />
+                              Sync
+                            </button>
+                          </div>
+                          <div className="text-[11px] text-neutral-fg3 font-mono mb-2">{remoteStatus.remoteUrl}</div>
+                          {(remoteStatus.ahead > 0 || remoteStatus.behind > 0) ? (
+                            <div className="flex items-center gap-2 text-[11px]">
+                              {remoteStatus.ahead > 0 && <span className="text-neutral-fg3">↑ {remoteStatus.ahead} ahead</span>}
+                              {remoteStatus.behind > 0 && <span className="text-neutral-fg3">↓ {remoteStatus.behind} behind</span>}
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-1.5 text-[11px] text-success">
+                              <CheckCircle2 className="h-3 w-3" />
+                              <span>Up to date</span>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {status && (status.staged.length + status.unstaged.length + status.untracked.length) > 0 && (
+                        <div className="mt-4 pt-4 border-t border-stroke">
+                          <span className="rounded-full bg-danger-light px-2.5 py-0.5 text-[11px] font-semibold text-danger">
+                            {status.staged.length + status.unstaged.length + status.untracked.length} {t("projectSettings.modifications")}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Git Configuration */}
+                    <div className="card-glow p-6">
+                      <div className="text-label mb-4">{t("projectSettings.configuration")}</div>
+
+                      <div className="flex flex-col gap-4">
+                        <div>
+                          <label className="text-[12px] text-neutral-fg2 mb-1.5 block">{t("projectSettings.remoteUrl")}</label>
+                          <input
+                            type="text"
+                            value={config?.remoteUrl || ""}
+                            onChange={(e) => setGitConfigForm({ ...gitConfigForm, remoteUrl: e.target.value })}
+                            placeholder="https://github.com/user/repo.git"
+                            className="w-full input-fluent text-[12px]"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="text-[12px] text-neutral-fg2 mb-1.5 block">{t("projectSettings.defaultBranch")}</label>
+                          <select
+                            value={config?.defaultBranch || "main"}
+                            onChange={(e) => setGitConfigForm({ ...gitConfigForm, defaultBranch: e.target.value })}
+                            className="w-full input-fluent text-[12px]"
+                          >
+                            <option value="main">main</option>
+                            <option value="master">master</option>
+                          </select>
+                        </div>
+
+                        <div className="section-divider" />
+
+                        <button
+                          onClick={async () => {
+                            try {
+                              await updateConfig(gitConfigForm);
+                              addToast("success", t("projectSettings.configSaved"), t("projectSettings.configSavedDesc"));
+                            } catch {
+                              addToast("error", t("projectSettings.saveError"), t("projectSettings.saveErrorDesc"));
+                            }
+                          }}
+                          className="mt-2 w-full btn-primary rounded-lg py-2.5 text-[12px] font-semibold text-white"
+                        >
+                          {t("projectSettings.saveConfig")}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Avançado (Danger Zone) */}
+            {activeTab === "avancado" && (
+              <div className="flex flex-col gap-6 animate-fade-up">
+                <div>
+                  <h3 className="text-title text-danger mb-1">{t("projectSettings.dangerZone")}</h3>
+                  <p className="text-[12px] text-neutral-fg3 mb-6">{t("projectSettings.dangerDesc")}</p>
+                </div>
+                <div className="flex items-center justify-between rounded-xl border border-danger/20 bg-danger-light/30 px-6 py-5">
+                  <div>
+                    <p className="text-[13px] font-semibold text-neutral-fg1">{t("projectSettings.archiveProject")}</p>
+                    <p className="text-[11px] text-neutral-fg3 mt-0.5">{t("projectSettings.archiveProjectDesc")}</p>
+                  </div>
+                  <button
+                    onClick={() => setShowArchiveDialog(true)}
+                    className="rounded-lg border border-danger/30 px-5 py-2.5 text-[12px] font-semibold text-danger transition-colors hover:bg-danger hover:text-white"
+                  >
+                    {t("projectSettings.archiveProject")}
+                  </button>
+                </div>
+              </div>
+            )}
+
+          </div>
+        </div>
+      </div>
+
+      {showArchiveDialog && (
+        <ConfirmDialog
+          title={t("projectSettings.archiveConfirm")}
+          message={t("projectSettings.archiveConfirmMessage", { name: project.name })}
+          confirmLabel={t("projectSettings.archiveProject")}
+          variant="danger"
+          onConfirm={handleArchive}
+          onCancel={() => setShowArchiveDialog(false)}
+        />
+      )}
+    </div>
+  );
+}

@@ -1,0 +1,269 @@
+import { useState, useEffect, useRef, useMemo } from "react";
+import { useTranslation } from "react-i18next";
+import { useNavigate } from "react-router-dom";
+import { Search, Folder, CheckSquare, Users, Layout, ArrowRight } from "lucide-react";
+import { useWorkspaceStore } from "../../stores/workspace-store";
+import { useTasks } from "../../hooks/use-tasks";
+import { cn } from "../../lib/utils";
+
+interface CommandPaletteProps {
+  open: boolean;
+  onClose: () => void;
+}
+
+interface CommandItem {
+  id: string;
+  type: "project" | "task" | "agent" | "navigation";
+  label: string;
+  description?: string;
+  action: () => void;
+}
+
+export function CommandPalette({ open, onClose }: CommandPaletteProps) {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const projects = useWorkspaceStore((s) => s.projects);
+  const agents = useWorkspaceStore((s) => s.agents);
+  const activeProjectId = useWorkspaceStore((s) => s.activeProjectId);
+  const { tasks } = useTasks(activeProjectId ?? undefined);
+  const [query, setQuery] = useState("");
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Build command list
+  const commands = useMemo(() => {
+    const items: CommandItem[] = [];
+
+    // Projects
+    projects.forEach((project) => {
+      items.push({
+        id: `project-${project.id}`,
+        type: "project",
+        label: project.name,
+        description: project.path,
+        action: () => {
+          navigate(`/project/${project.id}`);
+          onClose();
+        },
+      });
+    });
+
+    // Tasks (only if in a project)
+    if (activeProjectId) {
+      tasks.forEach((task) => {
+        items.push({
+          id: `task-${task.id}`,
+          type: "task",
+          label: task.title,
+          description: task.status,
+          action: () => {
+            navigate(`/project/${activeProjectId}/tasks`);
+            onClose();
+          },
+        });
+      });
+    }
+
+    // Agents
+    agents.forEach((agent) => {
+      items.push({
+        id: `agent-${agent.id}`,
+        type: "agent",
+        label: agent.name,
+        description: agent.role,
+        action: () => {
+          if (activeProjectId) {
+            navigate(`/project/${activeProjectId}/agents`);
+          }
+          onClose();
+        },
+      });
+    });
+
+    // Navigation
+    const navItems = [
+      { id: "dashboard", label: t("nav.dashboard"), path: "/" },
+      { id: "projects", label: t("nav.projects"), path: "/projects" },
+      { id: "analytics", label: t("nav.analytics"), path: "/analytics" },
+      { id: "settings", label: t("nav.settings"), path: "/settings" },
+    ];
+    navItems.forEach((navItem) => {
+      items.push({
+        id: `nav-${navItem.id}`,
+        type: "navigation",
+        label: navItem.label,
+        action: () => {
+          navigate(navItem.path);
+          onClose();
+        },
+      });
+    });
+
+    return items;
+  }, [projects, tasks, agents, activeProjectId, navigate, onClose]);
+
+  // Filter commands
+  const filteredCommands = useMemo(() => {
+    if (!query.trim()) return commands;
+    const lowerQuery = query.toLowerCase();
+    return commands.filter(
+      (cmd) =>
+        cmd.label.toLowerCase().includes(lowerQuery) ||
+        cmd.description?.toLowerCase().includes(lowerQuery),
+    );
+  }, [commands, query]);
+
+  // Group filtered commands
+  const groupedCommands = useMemo(() => {
+    const groups = {
+      project: filteredCommands.filter((c) => c.type === "project"),
+      task: filteredCommands.filter((c) => c.type === "task"),
+      agent: filteredCommands.filter((c) => c.type === "agent"),
+      navigation: filteredCommands.filter((c) => c.type === "navigation"),
+    };
+    return groups;
+  }, [filteredCommands]);
+
+  // Reset selection when filtered list changes
+  useEffect(() => {
+    setSelectedIndex(0);
+  }, [filteredCommands]);
+
+  // Focus input when opened
+  useEffect(() => {
+    if (open) {
+      inputRef.current?.focus();
+      setQuery("");
+      setSelectedIndex(0);
+    }
+  }, [open]);
+
+  // Keyboard navigation
+  useEffect(() => {
+    if (!open) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSelectedIndex((prev) => Math.min(prev + 1, filteredCommands.length - 1));
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSelectedIndex((prev) => Math.max(prev - 1, 0));
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        const selected = filteredCommands[selectedIndex];
+        if (selected) selected.action();
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [open, filteredCommands, selectedIndex]);
+
+  if (!open) return null;
+
+  const GROUP_CONFIG = {
+    project: { label: t("nav.projects"), icon: Folder, color: "text-brand" },
+    task: { label: t("nav.tasks"), icon: CheckSquare, color: "text-success" },
+    agent: { label: t("nav.agents"), icon: Users, color: "text-purple" },
+    navigation: { label: t("commandPalette.navigation"), icon: Layout, color: "text-info" },
+  };
+
+  let globalIndex = 0;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/30 backdrop-blur-sm pt-[20vh]"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-[560px] rounded-lg bg-neutral-bg1 shadow-16 border border-stroke2 overflow-hidden animate-fade-up"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Search Input */}
+        <div className="flex items-center gap-3 border-b border-stroke2 px-4 py-3">
+          <Search className="h-5 w-5 text-neutral-fg3" />
+          <input
+            ref={inputRef}
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={t("commandPalette.searchPlaceholder")}
+            className="flex-1 text-[14px] text-neutral-fg1 placeholder-neutral-fg-disabled outline-none bg-transparent"
+          />
+        </div>
+
+        {/* Results */}
+        <div className="max-h-[400px] overflow-y-auto">
+          {filteredCommands.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-12 px-6">
+              <Search className="h-10 w-10 text-neutral-fg-disabled mb-3" />
+              <p className="text-[13px] text-neutral-fg3">{t("common.noResults")}</p>
+            </div>
+          ) : (
+            <>
+              {(Object.entries(groupedCommands) as [keyof typeof groupedCommands, CommandItem[]][]).map(
+                ([groupType, items]) => {
+                  if (items.length === 0) return null;
+                  const config = GROUP_CONFIG[groupType];
+                  const Icon = config.icon;
+
+                  return (
+                    <div key={groupType} className="border-b border-stroke2 last:border-0">
+                      <div className="flex items-center gap-2 px-4 py-2 bg-neutral-bg-hover">
+                        <Icon className={cn("h-3.5 w-3.5", config.color)} />
+                        <span className="text-[11px] font-semibold uppercase tracking-wider text-neutral-fg3">
+                          {config.label}
+                        </span>
+                      </div>
+                      {items.map((item) => {
+                        const currentIndex = globalIndex++;
+                        const isSelected = currentIndex === selectedIndex;
+
+                        return (
+                          <button
+                            key={item.id}
+                            onClick={item.action}
+                            className={cn(
+                              "flex w-full items-center justify-between px-4 py-3 text-left transition-colors",
+                              isSelected ? "bg-brand-light" : "hover:bg-neutral-bg-hover",
+                            )}
+                          >
+                            <div className="min-w-0 flex-1">
+                              <p className="text-[13px] font-medium text-neutral-fg1 truncate">
+                                {item.label}
+                              </p>
+                              {item.description && (
+                                <p className="text-[11px] text-neutral-fg3 truncate">
+                                  {item.description}
+                                </p>
+                              )}
+                            </div>
+                            {isSelected && <ArrowRight className="h-4 w-4 shrink-0 text-brand ml-3" />}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  );
+                },
+              )}
+            </>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center justify-center gap-4 border-t border-stroke2 px-4 py-2 bg-neutral-bg-hover">
+          <span className="text-[10px] text-neutral-fg-disabled">
+            <kbd className="rounded bg-neutral-bg1 px-1.5 py-0.5 border border-stroke text-neutral-fg3">Esc</kbd> {t("commandPalette.toClose")}
+          </span>
+          <span className="text-[10px] text-neutral-fg-disabled">
+            <kbd className="rounded bg-neutral-bg1 px-1.5 py-0.5 border border-stroke text-neutral-fg3">↑↓</kbd> {t("commandPalette.toNavigate")}
+          </span>
+          <span className="text-[10px] text-neutral-fg-disabled">
+            <kbd className="rounded bg-neutral-bg1 px-1.5 py-0.5 border border-stroke text-neutral-fg3">Enter</kbd> {t("commandPalette.toSelect")}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}

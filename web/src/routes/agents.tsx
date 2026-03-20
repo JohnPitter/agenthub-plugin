@@ -1,0 +1,454 @@
+import { useState, useEffect } from "react";
+import { useTranslation } from "react-i18next";
+import { Plus, Power, Settings, Users, GitBranch, Trash2, Brain, ScrollText } from "lucide-react";
+import { CommandBar } from "../components/layout/command-bar";
+import { getSocket } from "../lib/socket";
+import { useAgents } from "../hooks/use-agents";
+import { AgentConfigDialog } from "../components/agents/agent-config-dialog";
+import { AgentAvatar } from "../components/agents/agent-avatar";
+import { WorkflowEditor } from "../components/agents/workflow-editor";
+import { ConfirmDialog } from "../components/ui/confirm-dialog";
+import { useWorkflowStore } from "../stores/workflow-store";
+import { useWorkspaceStore } from "../stores/workspace-store";
+import { api, cn } from "../lib/utils";
+import type { Agent, AgentWorkflow } from "../shared";
+import { getModelLabel } from "../shared";
+
+type AgentsTab = "agentes" | "workflow";
+
+const WORKFLOW_STORAGE_KEY = "agenthub:workflow:v5";
+
+function loadWorkflow(): AgentWorkflow | null {
+  try {
+    const raw = localStorage.getItem(WORKFLOW_STORAGE_KEY);
+    if (!raw) return null;
+    const wf = JSON.parse(raw) as AgentWorkflow;
+    // If workflow has only 1 step (old incomplete default), discard it
+    if (wf.steps.length <= 1) return null;
+    return wf;
+  } catch {
+    return null;
+  }
+}
+
+function saveWorkflowToStorage(wf: AgentWorkflow) {
+  localStorage.setItem(WORKFLOW_STORAGE_KEY, JSON.stringify(wf));
+}
+
+export function AgentsPage() {
+  const { t } = useTranslation();
+  const { agents, fetchAgents, toggleAgent, updateAgent, createAgent, deleteAgent } = useAgents();
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [configAgent, setConfigAgent] = useState<Agent | null>(null);
+  const [activeTab, setActiveTab] = useState<AgentsTab>("agentes");
+  const [savedWorkflow, setSavedWorkflow] = useState<AgentWorkflow | null>(loadWorkflow);
+  const [memories, setMemories] = useState<{ id: string; type: string; content: string; createdAt: string }[]>([]);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
+
+  // Workflow store for API integration
+  const activeProjectId = useWorkspaceStore((s) => s.activeProjectId);
+  const {
+    workflows,
+    activeWorkflow: apiWorkflow,
+    saving,
+    fetchWorkflows,
+    fetchWorkflow,
+    saveWorkflow: saveWorkflowApi,
+    setActiveWorkflow,
+    setDefault: setDefaultWorkflow,
+  } = useWorkflowStore();
+
+  // Fetch workflows from API when project is active
+  useEffect(() => {
+    if (activeProjectId && activeTab === "workflow") {
+      fetchWorkflows(activeProjectId);
+    }
+  }, [activeProjectId, activeTab, fetchWorkflows]);
+
+  // Real-time agent list updates via socket
+  useEffect(() => {
+    const socket = getSocket();
+    const handleAgentChange = () => { fetchAgents(); };
+    socket.on("agent:created", handleAgentChange);
+    socket.on("agent:deleted", handleAgentChange);
+    socket.on("agent:updated", handleAgentChange);
+    return () => {
+      socket.off("agent:created", handleAgentChange);
+      socket.off("agent:deleted", handleAgentChange);
+      socket.off("agent:updated", handleAgentChange);
+    };
+  }, [fetchAgents]);
+
+  // Fetch memories when selected agent changes
+  useEffect(() => {
+    const id = selectedId ?? agents[0]?.id;
+    if (!id) { setMemories([]); return; }
+    api<{ memories: { id: string; type: string; content: string; createdAt: string }[] }>(`/agents/${id}/memories`)
+      .then((data) => setMemories(data.memories ?? []))
+      .catch(() => setMemories([]));
+  }, [selectedId, agents]);
+
+  const activeCount = agents.filter((a) => a.isActive).length;
+  const selected = agents.find((a) => a.id === selectedId) ?? agents[0] ?? null;
+
+  const handleSaveAgent = async (agentId: string, updates: Partial<Agent>) => {
+    await updateAgent(agentId, updates);
+  };
+
+  const handleDeleteAgent = async (agentId: string) => {
+    const agent = agents.find((a) => a.id === agentId);
+    if (!agent || agent.isDefault) return;
+    setDeleteId(agentId);
+  };
+
+  const confirmDeleteAgent = async () => {
+    if (!deleteId) return;
+    await deleteAgent(deleteId);
+    if (selectedId === deleteId) setSelectedId(null);
+    setDeleteId(null);
+  };
+
+  const handleAddAgent = async () => {
+    const agent = await createAgent({
+      name: t("agents.addAgent"),
+      role: "custom",
+      model: "claude-sonnet-4-5-20250929",
+      description: t("agents.typeCustom"),
+    });
+    setSelectedId(agent.id);
+    setConfigAgent(agent);
+  };
+
+  const handleSaveWorkflow = (wf: AgentWorkflow) => {
+    // Always save to localStorage as fallback
+    saveWorkflowToStorage(wf);
+    setSavedWorkflow(wf);
+  };
+
+  const handleSelectWorkflow = (id: string) => {
+    const wf = workflows.find((w) => w.id === id);
+    if (wf) {
+      setActiveWorkflow(wf);
+    } else {
+      fetchWorkflow(id);
+    }
+  };
+
+  const handleSetDefault = (id: string) => {
+    setDefaultWorkflow(id);
+  };
+
+  return (
+    <div className="flex h-full flex-col">
+      <CommandBar>
+        <div className="flex items-center gap-4">
+          {/* Tabs */}
+          <div className="flex items-center gap-1 rounded-lg bg-neutral-bg2 p-1">
+            <button
+              onClick={() => setActiveTab("agentes")}
+              className={cn(
+                "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[12px] font-semibold transition-all",
+                activeTab === "agentes"
+                  ? "bg-neutral-bg1 text-neutral-fg1 shadow-xs"
+                  : "text-neutral-fg3 hover:text-neutral-fg2",
+              )}
+            >
+              <Users className="h-3.5 w-3.5" />
+              {t("agents.title")}
+            </button>
+            <button
+              onClick={() => setActiveTab("workflow")}
+              className={cn(
+                "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[12px] font-semibold transition-all",
+                activeTab === "workflow"
+                  ? "bg-neutral-bg1 text-neutral-fg1 shadow-xs"
+                  : "text-neutral-fg3 hover:text-neutral-fg2",
+              )}
+            >
+              <GitBranch className="h-3.5 w-3.5" />
+              {t("agents.workflow")}
+            </button>
+          </div>
+
+          {activeTab === "agentes" && agents.length > 0 && (
+            <span className="flex h-5 min-w-5 items-center justify-center rounded-md bg-brand-light px-1.5 text-[10px] font-semibold text-brand">
+              {activeCount}/{agents.length}
+            </span>
+          )}
+        </div>
+      </CommandBar>
+
+      {activeTab === "agentes" ? (
+        <div className="flex flex-1 flex-col md:flex-row overflow-hidden">
+          {/* Left — Agent List */}
+          <nav className="w-full md:w-[280px] shrink-0 border-b md:border-b-0 md:border-r border-stroke2 bg-neutral-bg-subtle flex flex-col max-h-[40vh] md:max-h-none overflow-y-auto md:overflow-y-visible">
+            <div className="flex items-center justify-between px-5 pt-5 pb-3">
+              <span className="section-heading !mb-0">{t("agents.title")}</span>
+              <button
+                onClick={handleAddAgent}
+                className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand text-white transition-all hover:bg-brand-hover hover:shadow-glow"
+                title={t("agents.addAgent")}
+              >
+                <Plus className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-3 pb-4 space-y-1">
+              {agents.map((agent) => {
+                const isActive = selected?.id === agent.id;
+                return (
+                  <button
+                    key={agent.id}
+                    onClick={() => setSelectedId(agent.id)}
+                    className={cn(
+                      "flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left transition-all duration-200",
+                      isActive
+                        ? "bg-gradient-to-r from-brand-light to-transparent text-brand shadow-xs"
+                        : "text-neutral-fg2 hover:bg-neutral-bg-hover hover:text-neutral-fg1",
+                    )}
+                  >
+                    <AgentAvatar name={agent.name} avatar={agent.avatar} color={agent.color} size="sm" />
+                    <div className="min-w-0 flex-1">
+                      <p className={cn(
+                        "truncate text-[13px] font-medium",
+                        isActive ? "text-brand" : "text-neutral-fg1",
+                      )}>
+                        {agent.name}
+                      </p>
+                      <p className="truncate text-[11px] text-neutral-fg3">
+                        {t(`roles.${agent.role}`, agent.role)}
+                      </p>
+                    </div>
+                    <span className={cn(
+                      "h-2.5 w-2.5 shrink-0 rounded-full",
+                      agent.isActive ? "bg-success" : "bg-neutral-fg-disabled",
+                    )} style={agent.isActive ? { animation: "pulse-dot 2s ease-in-out infinite" } : undefined} />
+                  </button>
+                );
+              })}
+
+              {agents.length === 0 && (
+                <div className="flex flex-col items-center gap-3 px-4 py-10 text-center">
+                  <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-brand-light">
+                    <Users className="h-6 w-6 text-brand" />
+                  </div>
+                  <p className="text-[12px] text-neutral-fg3 leading-relaxed">
+                    {t("agents.noAgents")}
+                  </p>
+                </div>
+              )}
+            </div>
+          </nav>
+
+          {/* Right — Agent Detail */}
+          <div className="flex-1 overflow-y-auto p-4 md:p-6 lg:p-10">
+            {selected ? (
+              <div className="mx-auto max-w-2xl animate-fade-up">
+                {/* Header */}
+                <div className="flex items-start justify-between mb-8">
+                  <div className="flex items-center gap-4">
+                    <AgentAvatar name={selected.name} avatar={selected.avatar} color={selected.color} size="lg" className="shadow-2" />
+                    <div>
+                      <h2 className="text-[20px] font-semibold text-neutral-fg1">{selected.name}</h2>
+                      <div className="mt-1 flex items-center gap-2">
+                        <span className="text-[13px] font-medium text-neutral-fg2">
+                          {t(`roles.${selected.role}`, selected.role)}
+                        </span>
+                        <span className="text-neutral-fg-disabled">·</span>
+                        <span className="text-[12px] font-medium text-neutral-fg3 bg-neutral-bg2 px-2 py-0.5 rounded-md">
+                          {getModelLabel(selected.model)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                  <span className={cn(
+                    "inline-flex items-center gap-2 rounded-full px-3 py-1.5",
+                    selected.isActive ? "bg-success-light" : "bg-neutral-bg2",
+                  )}>
+                    <span className={cn(
+                      "h-2 w-2 rounded-full",
+                      selected.isActive ? "bg-success-dark" : "bg-neutral-fg-disabled",
+                    )} style={selected.isActive ? { animation: "pulse-dot 2s ease-in-out infinite" } : undefined} />
+                    <span className={cn(
+                      "text-[11px] font-semibold",
+                      selected.isActive ? "text-success-dark" : "text-neutral-fg-disabled",
+                    )}>
+                      {selected.isActive ? t("common.online") : t("common.offline")}
+                    </span>
+                  </span>
+                </div>
+
+                {/* Description */}
+                {selected.description && (
+                  <div className="card-glow p-6 mb-6">
+                    <h3 className="text-[12px] font-semibold uppercase tracking-wider text-neutral-fg2 mb-2">
+                      {t("agents.description")}
+                    </h3>
+                    <p className="text-[13px] text-neutral-fg1 leading-relaxed">{selected.description}</p>
+                  </div>
+                )}
+
+                {/* Details Grid */}
+                <div className="card-glow overflow-hidden mb-6">
+                  <dl className="flex flex-col divide-y divide-stroke2">
+                    <div className="flex items-center justify-between px-6 py-4">
+                      <dt className="text-[13px] text-neutral-fg2">{t("agents.level")}</dt>
+                      <dd className="inline-flex items-center rounded-md bg-brand-light px-3 py-1">
+                        <span className="text-[11px] font-semibold uppercase tracking-wider text-brand">
+                          {t(`levels.${selected.level}`, selected.level)}
+                        </span>
+                      </dd>
+                    </div>
+                    <div className="flex items-center justify-between px-6 py-4">
+                      <dt className="text-[13px] text-neutral-fg2">{t("agents.permissions")}</dt>
+                      <dd className="text-[13px] font-semibold text-neutral-fg1">
+                        {t(`permissions.${selected.permissionMode}`)}
+                      </dd>
+                    </div>
+                    <div className="flex items-center justify-between px-6 py-4">
+                      <dt className="text-[13px] text-neutral-fg2">{t("agents.thinkingTokens")}</dt>
+                      <dd className="text-[13px] font-semibold text-neutral-fg1">
+                        {selected.maxThinkingTokens ? `${(selected.maxThinkingTokens / 1000).toFixed(0)}k tokens` : t("common.inactive")}
+                      </dd>
+                    </div>
+                    <div className="flex items-center justify-between px-6 py-4">
+                      <dt className="text-[13px] text-neutral-fg2">{t("agents.type")}</dt>
+                      <dd className="text-[13px] font-semibold text-neutral-fg1">
+                        {selected.isDefault ? t("agents.typeDefault") : t("agents.typeCustom")}
+                      </dd>
+                    </div>
+                  </dl>
+                </div>
+
+                {/* Tools */}
+                <div className="card-glow p-6 mb-6">
+                  <h3 className="text-[12px] font-semibold uppercase tracking-wider text-neutral-fg2 mb-3">
+                    {t("agents.tools")}
+                  </h3>
+                  <div className="flex flex-wrap gap-2">
+                    {(typeof selected.allowedTools === "string"
+                      ? JSON.parse(selected.allowedTools)
+                      : selected.allowedTools ?? []
+                    ).map((tool: string) => (
+                      <span
+                        key={tool}
+                        className="rounded-md bg-brand-light px-3 py-1.5 text-[12px] font-medium text-brand"
+                      >
+                        {tool}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Memories */}
+                <div className="card-glow p-6 mb-6">
+                  <h3 className="text-[12px] font-semibold uppercase tracking-wider text-neutral-fg2 mb-3 flex items-center gap-2">
+                    <Brain className="h-3.5 w-3.5" />
+                    {t("agents.memories")}
+                  </h3>
+                  {memories.length > 0 ? (
+                    <div className="max-h-48 overflow-y-auto space-y-2">
+                      {memories.map((mem) => (
+                        <div key={mem.id} className="flex items-start gap-2 rounded-lg bg-neutral-bg3/50 px-3 py-2">
+                          <span className="shrink-0 rounded-md bg-brand-light px-2 py-0.5 text-[10px] font-semibold text-brand uppercase tracking-wider">
+                            {mem.type}
+                          </span>
+                          <p className="text-[12px] text-neutral-fg2 leading-relaxed line-clamp-3">{mem.content}</p>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center gap-2 py-6 text-center">
+                      <ScrollText className="h-6 w-6 text-neutral-fg-disabled" />
+                      <p className="text-[12px] text-neutral-fg3">{t("agents.noMemories")}</p>
+                    </div>
+                  )}
+                </div>
+
+                {/* Actions */}
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => toggleAgent(selected.id)}
+                    className={cn(
+                      "flex flex-1 items-center justify-center gap-2 rounded-lg py-3 text-[13px] font-semibold transition-colors",
+                      selected.isActive
+                        ? "bg-success-light text-success-dark hover:bg-success-light/80"
+                        : "bg-neutral-bg2 text-neutral-fg3 hover:bg-neutral-bg-hover",
+                    )}
+                  >
+                    <Power className="h-4 w-4" />
+                    {selected.isActive ? t("common.active") : t("common.inactive")}
+                  </button>
+                  <button
+                    onClick={() => setConfigAgent(selected)}
+                    className="btn-primary flex flex-1 items-center justify-center gap-2 rounded-lg py-3 text-[13px] font-semibold text-white"
+                  >
+                    <Settings className="h-4 w-4" />
+                    {t("agents.configure")}
+                  </button>
+                  {!selected.isDefault && (
+                    <button
+                      onClick={() => handleDeleteAgent(selected.id)}
+                      className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-neutral-bg2 text-neutral-fg3 hover:bg-danger-light hover:text-danger transition-colors"
+                      title={t("common.delete")}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="flex h-full items-center justify-center">
+                <div className="text-center">
+                  <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-brand-light">
+                    <Users className="h-8 w-8 text-brand" />
+                  </div>
+                  <p className="text-[14px] font-semibold text-neutral-fg2">{t("agents.noAgentSelected")}</p>
+                  <p className="mt-1 text-[12px] text-neutral-fg3">
+                    {t("agents.selectOrCreate")}
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      ) : (
+        /* Workflow tab */
+        <div className="flex-1 overflow-hidden">
+          <WorkflowEditor
+            agents={agents}
+            workflow={savedWorkflow}
+            onSave={handleSaveWorkflow}
+            apiWorkflow={apiWorkflow}
+            workflows={workflows}
+            onSelectWorkflow={handleSelectWorkflow}
+            onSetDefault={handleSetDefault}
+            saving={saving}
+          />
+        </div>
+      )}
+
+      {configAgent && (
+        <AgentConfigDialog
+          agent={configAgent}
+          onSave={handleSaveAgent}
+          onClose={() => setConfigAgent(null)}
+        />
+      )}
+
+      {deleteId && (() => {
+        const agentToDelete = agents.find((a) => a.id === deleteId);
+        return agentToDelete ? (
+          <ConfirmDialog
+            title={t("agents.deleteConfirmTitle")}
+            message={t("agents.deleteConfirm", { name: agentToDelete.name })}
+            confirmLabel={t("common.delete")}
+            variant="danger"
+            onConfirm={confirmDeleteAgent}
+            onCancel={() => setDeleteId(null)}
+          />
+        ) : null;
+      })()}
+    </div>
+  );
+}

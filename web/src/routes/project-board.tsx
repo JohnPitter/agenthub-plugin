@@ -1,0 +1,229 @@
+import { useState, useEffect, useRef, useCallback, lazy, Suspense } from "react";
+import { useParams } from "react-router-dom";
+import { useTranslation } from "react-i18next";
+import { LayoutGrid, Table2, Loader2 } from "lucide-react";
+import { useSocket } from "../hooks/use-socket";
+import { useAgents } from "../hooks/use-agents";
+import { useTasks } from "../hooks/use-tasks";
+import { getSocket } from "../lib/socket";
+import { KanbanBoard } from "../components/board/kanban-board";
+import { AgentActivityOverlay } from "../components/board/agent-activity-overlay";
+import { TaskChangesDialog } from "../components/tasks/task-changes-dialog";
+import { TaskDetailDrawer } from "../components/tasks/task-detail-drawer";
+import { CommandBar } from "../components/layout/command-bar";
+import { useNotificationStore } from "../stores/notification-store";
+import { cn } from "../lib/utils";
+import type { Task, TaskStatus } from "../shared";
+
+const TaskTable = lazy(() =>
+  import("../components/board/task-table").then((m) => ({ default: m.TaskTable }))
+);
+
+type BoardView = "kanban" | "table";
+
+export function ProjectBoard() {
+  const { t } = useTranslation();
+  const { id } = useParams<{ id: string }>();
+  const { agents } = useAgents();
+  const addToast = useNotificationStore((s) => s.addToast);
+  const { tasks: initialTasks, refetch: refetchTasks } = useTasks(id);
+  const [tasks, setTasks] = useState(initialTasks);
+  const [view, setView] = useState<BoardView>("kanban");
+  const [changesTaskId, setChangesTaskId] = useState<string | null>(null);
+  const [selectedTask, setSelectedTask] = useState<Task | null>(null);
+  const recentlyMovedRef = useRef<Set<string>>(new Set());
+  const [recentlyMoved, setRecentlyMoved] = useState<Set<string>>(new Set());
+
+  const markTaskMoved = useCallback((taskId: string) => {
+    recentlyMovedRef.current.add(taskId);
+    setRecentlyMoved(new Set(recentlyMovedRef.current));
+    setTimeout(() => {
+      recentlyMovedRef.current.delete(taskId);
+      setRecentlyMoved(new Set(recentlyMovedRef.current));
+    }, 800);
+  }, []);
+
+  useEffect(() => {
+    setTasks(initialTasks);
+  }, [initialTasks]);
+
+  // Re-fetch tasks on socket reconnect to ensure board is in sync
+  useEffect(() => {
+    const socket = getSocket();
+    const onReconnect = () => {
+      refetchTasks();
+    };
+    socket.on("connect", onReconnect);
+    return () => {
+      socket.off("connect", onReconnect);
+    };
+  }, [refetchTasks]);
+
+  const { executeTask } = useSocket(id, {
+    onTaskStatus: (data) => {
+      setTasks((prev) => {
+        const existing = prev.find((t) => t.id === data.taskId);
+        if (existing && existing.status !== data.status) {
+          markTaskMoved(data.taskId);
+        }
+        return prev.map((t) =>
+          t.id === data.taskId
+            ? {
+                ...t,
+                status: data.status as TaskStatus,
+                ...(data.agentId ? { assignedAgentId: data.agentId } : {}),
+                updatedAt: new Date(),
+              }
+            : t
+        );
+      });
+    },
+    onTaskCreated: (data) => {
+      const task = data.task as Task;
+      if (task && task.projectId === id) {
+        setTasks((prev) => {
+          if (prev.some((t) => t.id === task.id)) return prev;
+          return [task, ...prev];
+        });
+      }
+    },
+    onTaskDeleted: (data) => {
+      if (data.taskId) {
+        setTasks((prev) => prev.filter((t) => t.id !== data.taskId));
+      }
+    },
+    onTaskUpdated: (data) => {
+      const task = data.task as Task;
+      if (task) {
+        setTasks((prev) => {
+          const existing = prev.find((t) => t.id === task.id);
+          if (existing && task.status && existing.status !== task.status) {
+            markTaskMoved(task.id);
+          }
+          return prev.map((t) => (t.id === task.id ? { ...t, ...task } : t));
+        });
+      }
+    },
+  });
+
+  const handleTaskUpdate = (taskId: string, updates: Partial<Task> | TaskStatus) => {
+    const taskUpdates = typeof updates === "string" ? { status: updates } : updates;
+    setTasks((prevTasks) =>
+      prevTasks.map((task) =>
+        task.id === taskId ? { ...task, ...taskUpdates, updatedAt: new Date() } : task
+      )
+    );
+  };
+
+  return (
+    <div className="flex h-full flex-col">
+      {/* Command Bar */}
+      <CommandBar>
+        <div className="flex items-center justify-between w-full gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            {view === "kanban" ? (
+              <LayoutGrid className="h-4 w-4 text-brand shrink-0" />
+            ) : (
+              <Table2 className="h-4 w-4 text-brand shrink-0" />
+            )}
+            <span className="text-[13px] font-semibold text-neutral-fg1 hidden md:inline">
+              {view === "kanban" ? "Kanban Board" : t("tasks.title")}
+            </span>
+            <span className="text-[12px] text-neutral-fg3 shrink-0">
+              {tasks.length} task{tasks.length !== 1 ? "s" : ""}
+            </span>
+          </div>
+
+          {/* Pill view toggle */}
+          <div className="flex items-center rounded-full bg-neutral-bg2 p-1 border border-stroke ml-auto shrink-0">
+            <button
+              onClick={() => setView("kanban")}
+              className={cn(
+                "flex items-center gap-1.5 rounded-full px-2.5 md:px-4 py-1.5 text-[12px] font-medium transition-all duration-200",
+                view === "kanban"
+                  ? "bg-gradient-to-r from-brand to-brand-dark text-white shadow-brand"
+                  : "text-neutral-fg3 hover:text-neutral-fg1"
+              )}
+            >
+              <LayoutGrid className="h-3.5 w-3.5" />
+              <span className="hidden md:inline">Kanban</span>
+            </button>
+            <button
+              onClick={() => setView("table")}
+              className={cn(
+                "flex items-center gap-1.5 rounded-full px-2.5 md:px-4 py-1.5 text-[12px] font-medium transition-all duration-200",
+                view === "table"
+                  ? "bg-gradient-to-r from-brand to-brand-dark text-white shadow-brand"
+                  : "text-neutral-fg3 hover:text-neutral-fg1"
+              )}
+            >
+              <Table2 className="h-3.5 w-3.5" />
+              <span className="hidden md:inline">{t("tasks.title")}</span>
+            </button>
+          </div>
+        </div>
+      </CommandBar>
+
+      {/* Board content */}
+      <div className="flex-1 overflow-hidden p-3 md:p-5 lg:p-8">
+        {view === "kanban" ? (
+          <KanbanBoard
+            projectId={id || ""}
+            tasks={tasks}
+            agents={agents}
+            recentlyMoved={recentlyMoved}
+            onTaskUpdate={handleTaskUpdate}
+            onViewChanges={setChangesTaskId}
+            onTaskClick={setSelectedTask}
+            onError={(err) => {
+              if (err === "errorNoTechLead") {
+                addToast("error", t("tasks.errorNoTechLead"));
+              }
+            }}
+          />
+        ) : (
+          <Suspense
+            fallback={
+              <div className="flex h-full items-center justify-center">
+                <Loader2 className="h-6 w-6 animate-spin text-brand" />
+              </div>
+            }
+          >
+            <TaskTable
+              projectId={id || ""}
+              tasks={tasks}
+              agents={agents}
+              onTaskUpdate={handleTaskUpdate}
+            />
+          </Suspense>
+        )}
+      </div>
+
+      {/* Agent activity overlay */}
+      <AgentActivityOverlay />
+
+      {selectedTask && (
+        <TaskDetailDrawer
+          task={selectedTask}
+          agents={agents}
+          onClose={() => setSelectedTask(null)}
+          onViewChanges={(taskId) => {
+            setSelectedTask(null);
+            setChangesTaskId(taskId);
+          }}
+          onRetry={(taskId, agentId) => {
+            executeTask(taskId, agentId);
+            setSelectedTask(null);
+          }}
+        />
+      )}
+
+      {changesTaskId && (
+        <TaskChangesDialog
+          taskId={changesTaskId}
+          onClose={() => setChangesTaskId(null)}
+        />
+      )}
+    </div>
+  );
+}
