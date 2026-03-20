@@ -395,6 +395,35 @@ router.delete("/:id", (req, res) => {
   res.json({ success: true });
 });
 
+// ─── Language map for syntax highlighting ────────────────
+const LANG_MAP: Record<string, string> = {
+  ts: "typescript", tsx: "typescript", js: "javascript", jsx: "javascript",
+  py: "python", rs: "rust", go: "go", java: "java", rb: "ruby",
+  css: "css", html: "html", json: "json", md: "markdown", yml: "yaml", yaml: "yaml",
+  sh: "bash", sql: "sql", xml: "xml", toml: "toml", env: "bash",
+};
+
+/** Normalize path to forward slashes (git on Windows needs this) */
+function toGitPath(filePath: string): string {
+  return filePath.replace(/\\/g, "/");
+}
+
+/** Detect language from file extension */
+function detectLang(filePath: string): string {
+  const ext = filePath.split(".").pop() || "";
+  return LANG_MAP[ext] || ext;
+}
+
+/** Check if a commit is the initial (root) commit (has no parent) */
+function isRootCommit(hash: string, cwd: string): boolean {
+  try {
+    execFileSync("git", ["rev-parse", "--verify", `${hash}^`], { cwd, timeout: 3000, encoding: "utf-8", stdio: "pipe" });
+    return false;
+  } catch {
+    return true;
+  }
+}
+
 // GET /:id/changes — get git changes for task
 router.get("/:id/changes", (req, res) => {
   const task = db.select().from(tasks).where(eq(tasks.id, req.params.id)).get();
@@ -423,34 +452,35 @@ router.get("/:id/changes", (req, res) => {
       const author = lines[i + 3];
       const date = lines[i + 4];
 
-      // Get changed files for this commit
+      // Get changed files for this commit (--root handles initial commits with no parent)
       let changedFiles: string[] = [];
       try {
         const diffOutput = execFileSync("git", [
-          "diff-tree", "--no-commit-id", "-r", "--name-only", hash
+          "diff-tree", "--no-commit-id", "--root", "-r", "--name-only", hash
         ], { cwd: projectPath, timeout: 5000, encoding: "utf-8" });
-        changedFiles = diffOutput.trim().split("\n").filter(Boolean);
+        changedFiles = diffOutput.trim().split("\n").filter(Boolean).map(toGitPath);
       } catch { /* ignore */ }
+
+      // Check once whether this is the root commit (no parent)
+      const rootCommit = isRootCommit(hash, projectPath);
 
       const files = changedFiles.slice(0, 20).map(filePath => {
         let original = "";
         let modified = "";
-        const ext = filePath.split(".").pop() || "";
-        const langMap: Record<string, string> = {
-          ts: "typescript", tsx: "typescript", js: "javascript", jsx: "javascript",
-          py: "python", rs: "rust", go: "go", java: "java", rb: "ruby",
-          css: "css", html: "html", json: "json", md: "markdown", yml: "yaml", yaml: "yaml",
-        };
+        const gitPath = toGitPath(filePath);
+
+        // For root commits there is no parent, so original stays empty
+        if (!rootCommit) {
+          try {
+            original = execFileSync("git", ["show", `${hash}^:${gitPath}`], { cwd: projectPath, timeout: 3000, encoding: "utf-8" });
+          } catch { original = ""; }
+        }
 
         try {
-          original = execFileSync("git", ["show", `${hash}^:${filePath}`], { cwd: projectPath, timeout: 3000, encoding: "utf-8" });
-        } catch { original = ""; }
-
-        try {
-          modified = execFileSync("git", ["show", `${hash}:${filePath}`], { cwd: projectPath, timeout: 3000, encoding: "utf-8" });
+          modified = execFileSync("git", ["show", `${hash}:${gitPath}`], { cwd: projectPath, timeout: 3000, encoding: "utf-8" });
         } catch { modified = ""; }
 
-        return { path: filePath, original, modified, language: langMap[ext] || ext };
+        return { path: gitPath, original, modified, language: detectLang(gitPath) };
       });
 
       commits.push({ hash, shortHash, message, author, date, files });
@@ -459,19 +489,29 @@ router.get("/:id/changes", (req, res) => {
     // Also add uncommitted changes if any
     try {
       const statusOutput = execFileSync("git", ["status", "--porcelain"], { cwd: projectPath, timeout: 5000, encoding: "utf-8" });
-      const uncommittedFiles = statusOutput.trim().split("\n").filter(Boolean).map(l => l.slice(3));
+      const uncommittedFiles = statusOutput.trim().split("\n").filter(Boolean).map(line => {
+        // git status --porcelain: "XY path" or "XY path -> renamed" — strip status prefix
+        let filePath = line.slice(3);
+        // Handle renames: "old -> new" — use the new path
+        const arrowIdx = filePath.indexOf(" -> ");
+        if (arrowIdx !== -1) filePath = filePath.slice(arrowIdx + 4);
+        // Remove surrounding quotes (git quotes paths with special chars/spaces)
+        if (filePath.startsWith('"') && filePath.endsWith('"')) {
+          filePath = filePath.slice(1, -1).replace(/\\"/g, '"');
+        }
+        return toGitPath(filePath);
+      });
 
       if (uncommittedFiles.length > 0) {
         const files = uncommittedFiles.slice(0, 20).map(filePath => {
           let original = "";
           let modified = "";
-          const ext = filePath.split(".").pop() || "";
-          const langMap: Record<string, string> = {
-            ts: "typescript", tsx: "typescript", js: "javascript", jsx: "javascript",
-            py: "python", json: "json", md: "markdown", css: "css", html: "html",
-          };
+          const gitPath = toGitPath(filePath);
 
-          try { original = execFileSync("git", ["show", `HEAD:${filePath}`], { cwd: projectPath, timeout: 3000, encoding: "utf-8" }); } catch { /* new file */ }
+          try {
+            original = execFileSync("git", ["show", `HEAD:${gitPath}`], { cwd: projectPath, timeout: 3000, encoding: "utf-8" });
+          } catch { /* new file */ }
+
           try {
             const fullPath = join(projectPath, filePath);
             if (existsSync(fullPath)) {
@@ -479,7 +519,7 @@ router.get("/:id/changes", (req, res) => {
             }
           } catch { /* deleted file */ }
 
-          return { path: filePath, original, modified, language: langMap[ext] || ext };
+          return { path: gitPath, original, modified, language: detectLang(gitPath) };
         });
 
         commits.unshift({ hash: "uncommitted", shortHash: "uncommitted", message: "Uncommitted changes", author: "", date: new Date().toISOString(), files });

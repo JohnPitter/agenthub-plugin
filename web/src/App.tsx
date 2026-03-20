@@ -30,7 +30,6 @@ const TasksPage = lazy(() => import("./routes/tasks").then((m) => ({ default: m.
 const SettingsPage = lazy(() => import("./routes/settings").then((m) => ({ default: m.SettingsPage })));
 const DocsPage = lazy(() => import("./routes/docs").then((m) => ({ default: m.DocsPage })));
 const TeamSettings = lazy(() => import("./components/teams/team-settings").then((m) => ({ default: m.TeamSettings })));
-const AdminPage = lazy(() => import("./routes/admin").then((m) => ({ default: m.AdminPage })));
 
 function RouteLoader() {
   return (
@@ -42,18 +41,6 @@ function RouteLoader() {
 
 export function App() {
   const isLocalMode = (import.meta as unknown as { env: Record<string, string> }).env?.VITE_LOCAL_MODE === "true";
-
-  // Check if initial setup is needed and redirect (skip in local mode)
-  useEffect(() => {
-    if (isLocalMode) return;
-    api<{ isSetupComplete: boolean }>("/admin/setup-status")
-      .then(({ isSetupComplete }) => {
-        if (!isSetupComplete && window.location.pathname !== "/setup") {
-          window.location.href = "/setup";
-        }
-      })
-      .catch(() => {});
-  }, [isLocalMode]);
 
   useEffect(() => {
     const socket = getSocket();
@@ -100,7 +87,7 @@ export function App() {
             <Route path="/settings" element={<ErrorBoundary><Suspense fallback={<RouteLoader />}><SettingsPage /></Suspense></ErrorBoundary>} />
             <Route path="/settings/integrations" element={<div className="p-6">Integrations</div>} />
             <Route path="/teams/:id/settings" element={<ErrorBoundary><Suspense fallback={<RouteLoader />}><TeamSettings /></Suspense></ErrorBoundary>} />
-            <Route path="/admin" element={<ErrorBoundary><Suspense fallback={<RouteLoader />}><AdminPage /></Suspense></ErrorBoundary>} />
+
           </Route>
         </Route>
       </Routes>

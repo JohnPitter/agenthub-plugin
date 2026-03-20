@@ -1,10 +1,9 @@
 import { useEffect, useState, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useParams, useLocation } from "react-router-dom";
-import { LayoutDashboard, BarChart3, Users, ListTodo, Settings, Zap, FolderOpen, ChevronLeft, ChevronRight, BookOpen, Shield } from "lucide-react";
+import { LayoutDashboard, BarChart3, Users, ListTodo, Settings, Zap, FolderOpen, ChevronLeft, ChevronRight, BookOpen } from "lucide-react";
 import { useWorkspaceStore } from "../../stores/workspace-store";
 import { useChatStore } from "../../stores/chat-store";
-import { useAuthStore } from "../../stores/auth-store";
 import { AgentAvatar } from "../agents/agent-avatar";
 import { StorageUsageBar } from "../common/storage-usage-bar";
 import { TeamSwitcher } from "../teams/team-switcher";
@@ -227,7 +226,6 @@ export function AppSidebar() {
   const activeTeamId = useTeamStore((s) => s.activeTeamId);
   const { id: routeProjectId } = useParams();
   const location = useLocation();
-  const user = useAuthStore((s) => s.user);
   const [desktopCollapsed, setDesktopCollapsed] = useState(false);
 
   // On tablet (md but not lg), default to collapsed
@@ -378,31 +376,6 @@ export function AppSidebar() {
           );
         })}
       </nav>
-
-      {user?.role === "admin" && (
-        <nav className="mt-1 flex flex-col gap-1.5 px-7">
-          <Link
-            to="/admin"
-            className={cn(
-              "group relative flex items-center rounded-lg py-2.5 text-[13px] font-medium transition-all duration-200",
-              collapsed ? "justify-center px-3" : "gap-3.5 px-5",
-              isNavActive("/admin")
-                ? "bg-brand-light text-brand font-semibold border-l-2 border-brand shadow-[inset_0_0_12px_rgba(99,102,241,0.06)]"
-                : "text-neutral-fg2 hover:bg-neutral-bg-hover hover:text-neutral-fg1",
-            )}
-            title={collapsed ? "Admin" : undefined}
-          >
-            <Shield
-              className={cn(
-                "h-[18px] w-[18px] shrink-0 transition-colors duration-200",
-                isNavActive("/admin") ? "text-brand" : "text-neutral-fg3 group-hover:text-neutral-fg1",
-              )}
-              strokeWidth={isNavActive("/admin") ? 1.8 : 1.5}
-            />
-            {!collapsed && <span>Admin</span>}
-          </Link>
-        </nav>
-      )}
 
       {/* Claude Code CLI Usage */}
       {IS_LOCAL ? <ClaudeUsageWidget collapsed={collapsed} /> : <UsageWidget collapsed={collapsed} />}

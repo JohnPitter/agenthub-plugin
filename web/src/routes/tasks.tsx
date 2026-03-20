@@ -925,6 +925,19 @@ function WarRoomCard({ task, agentMap, projectMap, agentActivity, onDragStart, o
   const isAgentWorking = activity && activity.status !== "idle" && activity.taskId === task.id;
   const projectName = projectMap.get(task.projectId);
 
+  // Track status changes for move animation
+  const prevStatusRef = useRef(task.status);
+  const [animateMove, setAnimateMove] = useState(false);
+
+  useEffect(() => {
+    if (prevStatusRef.current !== task.status) {
+      prevStatusRef.current = task.status;
+      setAnimateMove(true);
+      const timer = setTimeout(() => setAnimateMove(false), 400);
+      return () => clearTimeout(timer);
+    }
+  }, [task.status]);
+
   return (
     <div
       draggable
@@ -935,6 +948,7 @@ function WarRoomCard({ task, agentMap, projectMap, agentActivity, onDragStart, o
         isAgentWorking
           ? "border-brand/30 shadow-glow"
           : "border-stroke hover:shadow-4",
+        animateMove && "animate-task-move",
       )}
     >
       {/* Working indicator */}
