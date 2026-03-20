@@ -859,9 +859,137 @@ app.get("/api/messages", (req, res) => {
   res.json({ messages: [] });
 });
 
-// Workflows stub
+// ---------------------------------------------------------------------------
+// Workflows — persisted in ~/.agenthub-local/workflow.json
+// ---------------------------------------------------------------------------
+
+const WORKFLOW_FILE = join(DATA_DIR, "workflow.json");
+
+interface WorkflowStepData {
+  id: string;
+  agentId: string;
+  label: string;
+  nextSteps: string[];
+  nextStepLabels?: string[];
+}
+
+interface WorkflowData {
+  id: string;
+  name: string;
+  description?: string;
+  entryStepId: string;
+  steps: WorkflowStepData[];
+  isDefault?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+function readWorkflows(): WorkflowData[] {
+  try {
+    if (!existsSync(WORKFLOW_FILE)) return [];
+    const raw = readFileSync(WORKFLOW_FILE, "utf-8");
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeWorkflows(workflows: WorkflowData[]): void {
+  writeFileSync(WORKFLOW_FILE, JSON.stringify(workflows, null, 2), "utf-8");
+}
+
 app.get("/api/workflows", (_req, res) => {
-  res.json({ workflows: [] });
+  const workflows = readWorkflows();
+  res.json({ workflows });
+});
+
+app.get("/api/workflows/:id", (req, res) => {
+  const workflows = readWorkflows();
+  const wf = workflows.find((w) => w.id === req.params.id);
+  if (!wf) return res.status(404).json({ error: "Workflow not found" });
+  res.json({ workflow: wf });
+});
+
+app.post("/api/workflows", (req, res) => {
+  const workflows = readWorkflows();
+  const body = req.body as Partial<WorkflowData>;
+  const now = new Date().toISOString();
+
+  const workflow: WorkflowData = {
+    id: body.id || nanoid(),
+    name: body.name || "Untitled Workflow",
+    description: body.description || "",
+    entryStepId: body.entryStepId || "",
+    steps: body.steps || [],
+    isDefault: body.isDefault ?? workflows.length === 0,
+    createdAt: body.createdAt || now,
+    updatedAt: now,
+  };
+
+  // Check if workflow with same ID exists → update instead
+  const existingIdx = workflows.findIndex((w) => w.id === workflow.id);
+  if (existingIdx >= 0) {
+    workflows[existingIdx] = { ...workflows[existingIdx], ...workflow, updatedAt: now };
+  } else {
+    workflows.push(workflow);
+  }
+
+  // If this is default, unset others
+  if (workflow.isDefault) {
+    for (const w of workflows) {
+      if (w.id !== workflow.id) w.isDefault = false;
+    }
+  }
+
+  writeWorkflows(workflows);
+  res.json({ workflow: existingIdx >= 0 ? workflows[existingIdx] : workflow });
+});
+
+app.put("/api/workflows/:id", (req, res) => {
+  const workflows = readWorkflows();
+  const idx = workflows.findIndex((w) => w.id === req.params.id);
+  if (idx < 0) return res.status(404).json({ error: "Workflow not found" });
+
+  const body = req.body as Partial<WorkflowData>;
+  const now = new Date().toISOString();
+
+  workflows[idx] = {
+    ...workflows[idx],
+    ...body,
+    id: req.params.id, // preserve original ID
+    updatedAt: now,
+  };
+
+  // If this is default, unset others
+  if (workflows[idx].isDefault) {
+    for (const w of workflows) {
+      if (w.id !== req.params.id) w.isDefault = false;
+    }
+  }
+
+  writeWorkflows(workflows);
+  res.json({ workflow: workflows[idx] });
+});
+
+app.delete("/api/workflows/:id", (req, res) => {
+  let workflows = readWorkflows();
+  workflows = workflows.filter((w) => w.id !== req.params.id);
+  writeWorkflows(workflows);
+  res.json({ ok: true });
+});
+
+app.post("/api/workflows/:id/set-default", (req, res) => {
+  const workflows = readWorkflows();
+  const wf = workflows.find((w) => w.id === req.params.id);
+  if (!wf) return res.status(404).json({ error: "Workflow not found" });
+
+  for (const w of workflows) {
+    w.isDefault = w.id === req.params.id;
+  }
+
+  writeWorkflows(workflows);
+  res.json({ workflow: wf });
 });
 
 // Skills stub

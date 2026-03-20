@@ -119,10 +119,16 @@ export function AgentsPage() {
     setConfigAgent(agent);
   };
 
-  const handleSaveWorkflow = (wf: AgentWorkflow) => {
+  const handleSaveWorkflow = async (wf: AgentWorkflow) => {
     // Always save to localStorage as fallback
     saveWorkflowToStorage(wf);
     setSavedWorkflow(wf);
+    // Persist to backend
+    try {
+      await api("/workflows", { method: "POST", body: JSON.stringify(wf) });
+    } catch {
+      // localStorage fallback already saved above
+    }
   };
 
   const handleSelectWorkflow = (id: string) => {
