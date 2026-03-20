@@ -1066,10 +1066,13 @@ httpServer.listen(PREFERRED_PORT, () => {
     whatsapp.setIo(io);
     if (config.allowedNumber) whatsapp.setAllowedNumber(config.allowedNumber);
 
-    const wId = whatsappIntegration.id;
     whatsapp.onStatusChange((s) => {
-      db.update(schema.integrations).set({ status: s, updatedAt: Date.now() })
-        .where(eq(schema.integrations.id, wId)).run();
+      const current = db.select().from(schema.integrations)
+        .where(eq(schema.integrations.type, "whatsapp")).get();
+      if (current) {
+        db.update(schema.integrations).set({ status: s, updatedAt: Date.now() })
+          .where(eq(schema.integrations.id, current.id)).run();
+      }
       io.emit("integration:status", { type: "whatsapp", status: s });
     });
 
@@ -1077,8 +1080,10 @@ httpServer.listen(PREFERRED_PORT, () => {
       console.log("[WhatsApp] Auto-reconnect successful");
     }).catch(() => {
       console.log("[WhatsApp] Auto-reconnect failed");
-      db.update(schema.integrations).set({ status: "disconnected", updatedAt: Date.now() })
-        .where(eq(schema.integrations.id, wId)).run();
+      const curr = db.select().from(schema.integrations)
+        .where(eq(schema.integrations.type, "whatsapp")).get();
+      if (curr) db.update(schema.integrations).set({ status: "disconnected", updatedAt: Date.now() })
+        .where(eq(schema.integrations.id, curr.id)).run();
       io.emit("integration:status", { type: "whatsapp", status: "disconnected" });
     });
   }

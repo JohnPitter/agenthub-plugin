@@ -65,8 +65,22 @@ router.post("/integrations/whatsapp/connect", async (req, res) => {
         .run();
     }
 
-    // Reset if previous connection was in error state
+    // If already connected, just update DB and return
     const service = getWhatsAppService();
+    if (service.getConnectionStatus() === "connected") {
+      if (allowedNumber) service.setAllowedNumber(allowedNumber);
+      const current = db.select().from(schema.integrations)
+        .where(eq(schema.integrations.type, "whatsapp")).get();
+      if (current) {
+        db.update(schema.integrations).set({ status: "connected", updatedAt: Date.now() })
+          .where(eq(schema.integrations.id, current.id)).run();
+      }
+      const io = req.app.get("io");
+      if (io) io.emit("integration:status", { type: "whatsapp", status: "connected" });
+      return res.json({ success: true, status: "connected", integrationId: current?.id ?? integration?.id });
+    }
+
+    // Reset if previous connection was in error state
     if (service.getConnectionStatus() === "error") {
       resetWhatsAppService();
     }
@@ -83,12 +97,14 @@ router.post("/integrations/whatsapp/connect", async (req, res) => {
       io?.emit("integration:status", { type: "whatsapp", status: "connecting", qr });
     });
 
-    // Status change callback → update DB + emit
+    // Status change callback → update DB + emit (always fetch latest integration)
     whatsapp.onStatusChange((status: string) => {
-      if (integration) {
+      const current = db.select().from(schema.integrations)
+        .where(eq(schema.integrations.type, "whatsapp")).get();
+      if (current) {
         db.update(schema.integrations)
           .set({ status, updatedAt: Date.now() })
-          .where(eq(schema.integrations.id, integration.id))
+          .where(eq(schema.integrations.id, current.id))
           .run();
       }
       io?.emit("integration:status", { type: "whatsapp", status });
