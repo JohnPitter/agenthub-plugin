@@ -97,6 +97,24 @@ export function TasksPage() {
 
   useEffect(() => { fetchTasks(); }, [fetchTasks]);
 
+  /* ─── Restore agent activity from server on mount ─── */
+  useEffect(() => {
+    api<{ activity: Record<string, { status: string; taskId: string; taskTitle: string; progress: number }> }>("/agents/activity")
+      .then(({ activity }) => {
+        for (const [agentId, info] of Object.entries(activity)) {
+          updateAgentActivity(agentId, {
+            status: info.status as AgentStatusEvent["status"],
+            taskId: info.taskId,
+            currentTask: info.taskTitle,
+            progress: info.progress,
+            lastActivity: Date.now(),
+          });
+        }
+      })
+      .catch(() => { /* non-critical */ });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   /* ─── Lookups ─── */
   const projectMap = useMemo(() => {
     const m = new Map<string, string>();

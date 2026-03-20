@@ -1,9 +1,11 @@
+import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { Cpu, Pause, Square } from "lucide-react";
 import { useWorkspaceStore } from "../../stores/workspace-store";
 import { useChatStore } from "../../stores/chat-store";
 import { useSocket } from "../../hooks/use-socket";
 import { AgentAvatar } from "../agents/agent-avatar";
+import { api } from "../../lib/utils";
 
 export function ActiveAgentBar() {
   const { t } = useTranslation();
@@ -11,7 +13,26 @@ export function ActiveAgentBar() {
   const projects = useWorkspaceStore((s) => s.projects);
   const activeProjectId = useWorkspaceStore((s) => s.activeProjectId);
   const agentActivity = useChatStore((s) => s.agentActivity);
+  const updateAgentActivity = useChatStore((s) => s.updateAgentActivity);
   const { cancelTask } = useSocket(activeProjectId ?? undefined);
+
+  /* Restore agent activity from server on mount */
+  useEffect(() => {
+    api<{ activity: Record<string, { status: string; taskId: string; taskTitle: string; progress: number }> }>("/agents/activity")
+      .then(({ activity }) => {
+        for (const [agentId, info] of Object.entries(activity)) {
+          updateAgentActivity(agentId, {
+            status: info.status as "running",
+            taskId: info.taskId,
+            currentTask: info.taskTitle,
+            progress: info.progress,
+            lastActivity: Date.now(),
+          });
+        }
+      })
+      .catch(() => { /* non-critical */ });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Find first agent that is actually running (real-time status)
   const runningAgent = agents.find((a) => {

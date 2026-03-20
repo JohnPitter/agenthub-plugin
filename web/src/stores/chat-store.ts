@@ -32,10 +32,32 @@ interface ChatState {
   incrementReplyCount: (messageId: string) => void;
 }
 
+/* ─── SessionStorage helpers for agentActivity persistence ─── */
+const ACTIVITY_STORAGE_KEY = "agenthub:agentActivity";
+
+function loadActivityFromStorage(): Map<string, AgentActivityInfo> {
+  try {
+    const raw = sessionStorage.getItem(ACTIVITY_STORAGE_KEY);
+    if (!raw) return new Map();
+    const parsed = JSON.parse(raw) as Record<string, AgentActivityInfo>;
+    return new Map(Object.entries(parsed));
+  } catch {
+    return new Map();
+  }
+}
+
+function saveActivityToStorage(activity: Map<string, AgentActivityInfo>): void {
+  try {
+    const obj: Record<string, AgentActivityInfo> = {};
+    for (const [k, v] of activity) obj[k] = v;
+    sessionStorage.setItem(ACTIVITY_STORAGE_KEY, JSON.stringify(obj));
+  } catch { /* storage full or unavailable */ }
+}
+
 export const useChatStore = create<ChatState>((set) => ({
   messages: [],
   streamingAgents: new Set(),
-  agentActivity: new Map(),
+  agentActivity: loadActivityFromStorage(),
   isLoadingMessages: false,
   hasMoreMessages: true,
   activeThread: null,
@@ -64,6 +86,7 @@ export const useChatStore = create<ChatState>((set) => ({
       const next = new Map(state.agentActivity);
       const current = next.get(agentId) ?? { status: "idle" as const, lastActivity: Date.now(), progress: 0 };
       next.set(agentId, { ...current, ...update });
+      saveActivityToStorage(next);
       return { agentActivity: next };
     }),
 

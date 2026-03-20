@@ -457,6 +457,26 @@ app.post("/api/tasks/:id/execute", async (req, res) => {
   });
 });
 
+// Agent activity endpoint — returns currently running agents (persists across page refresh)
+app.get("/api/agents/activity", (_req, res) => {
+  const runningTasks = db.select().from(schema.tasks)
+    .where(eq(schema.tasks.status, "in_progress")).all();
+
+  const activity: Record<string, { status: string; taskId: string; taskTitle: string; progress: number }> = {};
+  for (const task of runningTasks) {
+    if (task.assignedAgentId) {
+      activity[task.assignedAgentId] = {
+        status: "running",
+        taskId: task.id,
+        taskTitle: task.title,
+        progress: 50,
+      };
+    }
+  }
+
+  res.json({ activity });
+});
+
 // API routes
 app.use("/api/projects", projectsRouter);
 app.use("/api/tasks", tasksRouter);
