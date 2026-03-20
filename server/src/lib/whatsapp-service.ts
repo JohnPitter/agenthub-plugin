@@ -352,6 +352,71 @@ async function executeAction(action: Record<string, unknown>, io?: { emit: (e: s
   }
 }
 
+/** Transcribe audio using Anthropic API with raw HTTP (SDK doesn't support audio type) */
+async function transcribeAudio(base64Audio: string): Promise<string | null> {
+  try {
+    const credRaw = readFileSync(join(homedir(), ".claude", ".credentials.json"), "utf-8");
+    const token = JSON.parse(credRaw)?.claudeAiOauth?.accessToken;
+    if (!token) return null;
+
+    // Use raw https to send audio as content block (SDK types don't support audio yet)
+    const body = JSON.stringify({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 1024,
+      messages: [{
+        role: "user",
+        content: [
+          {
+            type: "document",
+            source: { type: "base64", media_type: "audio/ogg", data: base64Audio },
+          },
+          {
+            type: "text",
+            text: "Transcribe this audio message exactly as spoken. Return ONLY the transcription text, nothing else. If you cannot understand, return '[audio incompreensível]'.",
+          },
+        ],
+      }],
+    });
+
+    return new Promise((resolve) => {
+      const req = https.request({
+        hostname: "api.anthropic.com",
+        path: "/v1/messages",
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${token}`,
+          "anthropic-version": "2023-06-01",
+          "anthropic-beta": "oauth-2025-04-20",
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(body),
+        },
+      }, (res) => {
+        let data = "";
+        res.on("data", (chunk: string) => { data += chunk; });
+        res.on("end", () => {
+          try {
+            const parsed = JSON.parse(data);
+            if (parsed.content) {
+              const text = parsed.content.filter((b: { type: string }) => b.type === "text").map((b: { text: string }) => b.text).join("");
+              resolve(text.trim() || null);
+            } else {
+              console.error("[WhatsApp] Audio API error:", data.slice(0, 200));
+              resolve(null);
+            }
+          } catch { resolve(null); }
+        });
+      });
+      req.on("error", () => resolve(null));
+      req.setTimeout(30000, () => { req.destroy(); resolve(null); });
+      req.write(body);
+      req.end();
+    });
+  } catch (err) {
+    console.error("[WhatsApp] Transcription error:", err);
+    return null;
+  }
+}
+
 /** Create Anthropic client using OAuth token from Claude credentials */
 function createAnthropicClient(): Anthropic | null {
   try {
@@ -536,7 +601,7 @@ export class WhatsAppService {
       this.setStatus("connected");
 
       // Listen for incoming messages
-      client.onMessage((msg) => {
+      client.onMessage(async (msg) => {
         const from = serializeWid(msg.from);
         if (!from || from.endsWith("@g.us")) return; // ignore groups
 
@@ -546,7 +611,30 @@ export class WhatsAppService {
           if (!from.includes(normalized)) return;
         }
 
-        const messageBody = msg.body?.trim();
+        let messageBody = msg.body?.trim() || "";
+        const isAudio = msg.type === "ptt" || msg.type === "audio";
+
+        // Transcribe audio messages
+        if (isAudio && client) {
+          try {
+            console.log(`[WhatsApp] Audio message from ${from}, transcribing...`);
+            const mediaData = await client.downloadMedia(msg);
+            if (mediaData) {
+              const base64Audio = typeof mediaData === "string" ? mediaData : (mediaData as { data?: string }).data || "";
+              if (base64Audio) {
+                // Use Anthropic SDK to transcribe audio
+                const transcription = await transcribeAudio(base64Audio);
+                if (transcription) {
+                  messageBody = transcription;
+                  console.log(`[WhatsApp] Transcribed: ${messageBody.slice(0, 100)}`);
+                }
+              }
+            }
+          } catch (err) {
+            console.error("[WhatsApp] Audio transcription failed:", err);
+          }
+        }
+
         console.log(`[WhatsApp] Message from ${from}: ${messageBody?.slice(0, 100)}`);
 
         if (!messageBody || !client) return;
