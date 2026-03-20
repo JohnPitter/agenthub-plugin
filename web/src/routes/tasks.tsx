@@ -33,9 +33,12 @@ const KANBAN_COLUMNS: { status: TaskStatus; labelKey: string; dotColor: string; 
   { status: "in_progress", labelKey: "taskStatus.in_progress", dotColor: "bg-warning", glowColor: "ring-warning/30" },
   { status: "review", labelKey: "taskStatus.review", dotColor: "bg-purple", glowColor: "ring-purple/30" },
   { status: "done", labelKey: "taskStatus.done", dotColor: "bg-success", glowColor: "ring-success/30" },
-  { status: "failed", labelKey: "taskStatus.failed", dotColor: "bg-danger", glowColor: "ring-danger/30" },
-  { status: "cancelled", labelKey: "taskStatus.cancelled", dotColor: "bg-neutral-fg3", glowColor: "ring-neutral-fg3/30" },
 ];
+
+const KANBAN_SPLIT_COLUMN = {
+  top: { status: "failed" as TaskStatus, labelKey: "taskStatus.failed", dotColor: "bg-danger", glowColor: "ring-danger/30" },
+  bottom: { status: "cancelled" as TaskStatus, labelKey: "taskStatus.cancelled", dotColor: "bg-neutral-fg3", glowColor: "ring-neutral-fg3/30" },
+};
 
 const PRIORITY_STYLES: Record<string, { dot: string; labelKey: string }> = {
   urgent: { dot: "bg-danger", labelKey: "taskPriority.urgent" },
@@ -435,7 +438,8 @@ export function TasksPage() {
           {/* ─── View content ─── */}
           {viewMode === "kanban" ? (
             <div className="flex-1 overflow-x-auto px-3 md:px-6 pb-4 md:pb-6 pt-4">
-              <div className="grid h-full grid-cols-7 gap-3 md:gap-4" style={{ minWidth: 1400 }}>
+              <div className="grid h-full grid-cols-6 gap-3 md:gap-4" style={{ minWidth: 1200 }}>
+                {/* Main columns */}
                 {KANBAN_COLUMNS.map((column) => {
                   const columnTasks = getColumnTasks(column.status);
                   const isOver = dragOverColumn === column.status;
@@ -451,7 +455,6 @@ export function TasksPage() {
                         isOver && `ring-2 ${column.glowColor} bg-brand-light/5`,
                       )}
                     >
-                      {/* Column header */}
                       <div className="rounded-t-xl px-4 py-3 border-b border-stroke2 bg-neutral-bg2/50">
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-2">
@@ -463,8 +466,6 @@ export function TasksPage() {
                           </span>
                         </div>
                       </div>
-
-                      {/* Cards */}
                       <div className="flex flex-1 flex-col gap-2.5 overflow-y-auto p-3">
                         {columnTasks.length > 0 ? (
                           columnTasks.map((task) => (
@@ -487,6 +488,61 @@ export function TasksPage() {
                     </div>
                   );
                 })}
+
+                {/* Split column: Failed / Cancelled */}
+                <div className="flex flex-col rounded-xl">
+                  {[KANBAN_SPLIT_COLUMN.top, KANBAN_SPLIT_COLUMN.bottom].map((half, idx) => {
+                    const halfTasks = getColumnTasks(half.status);
+                    const isOver = dragOverColumn === half.status;
+                    return (
+                      <div
+                        key={half.status}
+                        onDragOver={(e) => handleDragOver(e, half.status)}
+                        onDragLeave={() => setDragOverColumn(null)}
+                        onDrop={(e) => handleDrop(e, half.status)}
+                        className={cn(
+                          "flex flex-col flex-1 transition-all duration-200",
+                          idx === 0 ? "rounded-t-xl" : "rounded-b-xl border-t border-stroke2",
+                          isOver && `ring-2 ${half.glowColor} bg-brand-light/5`,
+                        )}
+                      >
+                        <div className={cn(
+                          "px-4 py-2 border-b border-stroke2 bg-neutral-bg2/50",
+                          idx === 0 && "rounded-t-xl",
+                        )}>
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <span className={cn("h-2 w-2 rounded-full", half.dotColor)} />
+                              <span className="text-[12px] font-semibold text-neutral-fg1">{t(half.labelKey)}</span>
+                            </div>
+                            <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-neutral-bg3 px-1 text-[9px] font-semibold text-neutral-fg3">
+                              {halfTasks.length}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="flex flex-1 flex-col gap-2 overflow-y-auto p-2" style={{ maxHeight: "calc(50vh - 80px)" }}>
+                          {halfTasks.length > 0 ? (
+                            halfTasks.map((task) => (
+                              <WarRoomCard
+                                key={task.id}
+                                task={task}
+                                agentMap={agentMap}
+                                projectMap={projectMap}
+                                agentActivity={agentActivity}
+                                onDragStart={handleDragStart}
+                                onClick={setSelectedTask}
+                              />
+                            ))
+                          ) : (
+                            <div className="flex flex-1 items-center justify-center py-4">
+                              <p className="text-[10px] text-neutral-fg-disabled">{t("common.empty")}</p>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             </div>
           ) : (
