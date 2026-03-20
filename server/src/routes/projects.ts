@@ -81,7 +81,7 @@ router.post("/import", (req, res) => {
   let stack: string[] = [];
   try {
     const found = scanWorkspace(localPath + "/..");
-    const match = found.find((p: { path: string }) => p.path === localPath || p.name === name);
+    const match = found.find((p: { path: string; name: string }) => p.path === localPath || p.name === name);
     if (match) stack = match.stack;
   } catch { /* ignore */ }
 
