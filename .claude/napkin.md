@@ -38,6 +38,7 @@
 - Emoji in Python print on Windows causes charmap encoding errors
 - `require()` in ESM files — always use `import`
 - `process.exit(0)` with pending AbortController handles on Windows
+- NEVER `taskkill //IM claude.exe //F` — kills the current Claude Code session too. Only kill specific PIDs or node.exe orphans
 
 ## Domain Notes
 - Plugin marketplace: folder name in `plugins/` = plugin name for CLI

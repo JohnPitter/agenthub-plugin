@@ -341,13 +341,28 @@ router.patch("/:id", (req, res) => {
 
   const updated = db.select().from(tasks).where(eq(tasks.id, req.params.id)).get();
 
+  // Emit socket events for real-time updates on any status change
+  if (status && status !== task.status) {
+    const io = req.app.get("io");
+    if (io) {
+      const agentForActivity = assignedAgentId ?? task.assignedAgentId ?? "";
+      io.emit("task:status", { taskId: req.params.id, status, agentId: agentForActivity });
+      io.emit("task:updated", { task: updated });
+      io.emit("board:activity", {
+        agentId: agentForActivity,
+        action: `task:${status}`,
+        detail: `${task.title}: ${task.status} → ${status}`,
+      });
+    }
+  }
+
   // Auto-execute when task moves to assigned (skip in test/CI environments)
   if (status === "assigned" && status !== task.status && !process.env.DISABLE_AUTO_EXECUTE) {
     const taskIdForExec = req.params.id;
-    const io = req.app.get("io") ?? null;
+    const ioExec = req.app.get("io") ?? null;
     res.json({ task: updated });
     import("../lib/task-executor.js").then(({ executeTask }) => {
-      executeTask(taskIdForExec, io).catch((err: Error) => {
+      executeTask(taskIdForExec, ioExec).catch((err: Error) => {
         console.error(`[TaskExecutor] Auto-execute failed: ${err.message}`);
       });
     }).catch(() => {});
@@ -357,9 +372,9 @@ router.patch("/:id", (req, res) => {
   // Auto-commit + PR when task reaches done (async, non-blocking, after response)
   if (status === "done" && status !== task.status) {
     const taskIdForGit = req.params.id;
-    const io = req.app.get("io") ?? null;
+    const ioGit = req.app.get("io") ?? null;
     res.json({ task: updated });
-    autoCommitAndPR(taskIdForGit, io).catch(() => {});
+    autoCommitAndPR(taskIdForGit, ioGit).catch(() => {});
     return;
   }
 

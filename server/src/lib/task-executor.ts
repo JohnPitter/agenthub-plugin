@@ -73,6 +73,7 @@ Complete this task using the available tools. Work in the project directory.`;
     .run();
   io.emit("task:status", { taskId, status: "in_progress", agentId });
   io.emit("agent:status", { agentId, status: "running", taskId, progress: 0 });
+  io.emit("board:activity", { agentId, action: "status:running", detail: `${agent.name} started: ${task.title}` });
 
   db.insert(schema.taskLogs).values({
     id: nanoid(), taskId, agentId, action: "status_change",
@@ -132,8 +133,10 @@ Complete this task using the available tools. Work in the project directory.`;
   }).where(eq(schema.tasks.id, taskId)).run();
 
   io.emit("task:status", { taskId, status: finalStatus, agentId });
+  io.emit("task:updated", { task: db.select().from(schema.tasks).where(eq(schema.tasks.id, taskId)).get() });
   io.emit("agent:status", { agentId, status: "idle", taskId });
   io.emit("agent:result", { agentId, taskId, result: resultText.slice(0, 500), status: finalStatus });
+  io.emit("board:activity", { agentId, action: `task:${finalStatus}`, detail: `${task.title} → ${finalStatus}` });
 
   db.insert(schema.taskLogs).values({
     id: nanoid(), taskId, agentId, action: "status_change",
