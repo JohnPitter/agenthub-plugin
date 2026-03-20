@@ -37,32 +37,33 @@ cancelled <- (any)     pending <- cancelled
 ```
 
 ## Available Commands
-- `/agenthub` — Start server + open dashboard
+- `/start` — Start server + open dashboard
 
 ## API Endpoints (dynamic port)
 - `GET /api/health` — Server status + Claude token check
 - `GET /api/auth/me` — Local admin user
 - `GET/POST /api/projects` — Project CRUD
-- `POST /api/projects/create` — Create local project (~/Projects/<name>)
+- `POST /api/projects/create` — Create project (local or GitHub+local if token configured)
 - `POST /api/projects/import` — Import existing local path
-- `GET /api/projects/local-scan` — Scan directories for projects
-- `GET/POST/PATCH/DELETE /api/tasks` — Task CRUD with state machine
+- `GET /api/projects/local-scan` — Scan directories + GitHub repos (if token configured)
+- `GET/POST/PATCH/DELETE /api/tasks` — Task CRUD with state machine + auto-commit/PR on done
 - `GET /api/tasks/:id/logs` — Task audit log
 - `GET/POST/PATCH/DELETE /api/agents` — Agent CRUD
-- `GET /api/projects/:id/files` — File tree
-- `GET /api/projects/:id/files/content?path=...` — File content (path traversal protected)
-- `GET/POST /api/integrations/whatsapp/*` — WhatsApp connect/disconnect/status
-- `GET /api/dashboard/stats` — Aggregated stats
-- `GET /api/claude-usage` — Claude Code CLI usage data
-- `GET /api/plans/models` — Available AI models
 - `GET /api/agents/:id/context` — Agent config + memories for prompt injection
 - `GET /api/agents/:id/memories` — List agent memories
 - `POST /api/agents/:id/memories` — Save memory `{ content, type, source?, taskId? }`
 - `DELETE /api/agents/:id/memories/:memoryId` — Remove a memory
-- `GET/POST/PATCH/DELETE /api/docs` — Documentation CRUD
-- `GET /api/docs-gen/api` — Auto-generated API documentation (51 endpoints)
+- `GET /api/projects/:id/files` — File tree
+- `GET /api/projects/:id/files/content?path=...` — File content (path traversal protected)
 - `GET/PUT /api/projects/:id/git/status|config` — Git status and config
 - `POST /api/projects/:id/git/init|sync` — Git init and sync
+- `GET/POST/PATCH/DELETE /api/docs` — Documentation CRUD
+- `GET /api/docs-gen/api` — Auto-generated API documentation (51 endpoints)
+- `GET/POST /api/integrations/whatsapp/*` — WhatsApp connect/disconnect/status
+- `GET/POST /api/integrations/github/*` — GitHub token for auto-commit/PR
+- `GET /api/dashboard/stats` — Aggregated stats with per-project agents
+- `GET /api/claude-usage` — Claude CLI usage data with cache fallback
+- `GET /api/plans/models` — Available AI models
 - `POST /api/admin/factory-reset` — Reset all data (preserves agents)
 - `POST /api/auth/claude-login` — Trigger Claude OAuth login
 

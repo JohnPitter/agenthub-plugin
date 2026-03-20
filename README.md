@@ -22,8 +22,9 @@ This starts the local server, seeds 8 AI agents, and opens the dashboard in your
 
 - **Dashboard** with real-time stats, project overview, and Claude CLI usage monitoring
 - **8 AI Agents** pre-configured: Architect, Tech Lead, Frontend Dev, Backend Dev, QA, Doc Writer, Team Lead, Support
-- **Project Management** — import local projects or create new ones with tech stack selection (17 technologies)
-- **Task Orchestration** — full lifecycle with enforced state machine (created -> assigned -> in_progress -> review -> done)
+- **Project Management** — import local or GitHub repos, create new (local or GitHub+local) with tech stack selection (17 technologies)
+- **Task Orchestration** — full lifecycle with enforced state machine + auto-commit/PR on task completion
+- **GitHub Integration** — connect via Personal Access Token in Settings for auto-commit, push, and PR creation
 - **Agent Memories** — persistent learnings accumulated during task execution, injected into agent context
 - **Documentation** — built-in markdown editor with auto-generated API docs (51 endpoints)
 - **Git Integration** — status, config, init, sync from the dashboard project settings

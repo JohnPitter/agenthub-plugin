@@ -20,8 +20,9 @@ Starts the local server, seeds 8 AI agents, and opens the dashboard in your brow
 
 - **Dashboard** — Overview of projects, tasks, and agents with real-time stats
 - **8 AI Agents** — Architect, Tech Lead, Frontend Dev, Backend Dev, QA, Doc Writer, Team Lead, Support
-- **Project Management** — Import local projects or create new ones with tech stack selection
-- **Task Orchestration** — Full task lifecycle with enforced state machine
+- **Project Management** — Import local or GitHub repos, create new ones with tech stack selection (local or GitHub+local)
+- **Task Orchestration** — Full task lifecycle with enforced state machine + auto-commit/PR on completion
+- **GitHub Integration** — Personal access token in Settings for auto-commit, push, and PR creation
 - **Agent Memories** — Persistent learnings accumulated during task execution
 - **Documentation** — Built-in docs editor + auto-generated API documentation (51 endpoints)
 - **Git Integration** — Status, config, init, sync directly from the dashboard
