@@ -6,7 +6,7 @@ import {
   CheckCircle2, AlertTriangle, Zap, Terminal, FileCode,
   ArrowRightLeft, Eye, User, GripVertical, X, Tag,
   Calendar, Hash, DollarSign, Coins, Plus, FileDiff,
-  LayoutGrid, Building2, RotateCcw,
+  LayoutGrid, Building2, RotateCcw, Send, Loader2, XCircle,
 } from "lucide-react";
 import { CommandBar } from "../components/layout/command-bar";
 import { PixelOffice } from "../components/pixel-office/pixel-office";
@@ -681,6 +681,50 @@ function TaskDetailPanel({ task, agentMap, projectMap, agentActivity, onClose, o
   const [descExpanded, setDescExpanded] = useState(false);
   const [resultExpanded, setResultExpanded] = useState(false);
   const [specExpanded, setSpecExpanded] = useState(false);
+  const [reviewMsg, setReviewMsg] = useState("");
+  const [reviewChat, setReviewChat] = useState<{ role: string; content: string; ts: number }[]>([]);
+  const [reviewLoading, setReviewLoading] = useState(false);
+  const reviewEndRef = useRef<HTMLDivElement>(null);
+
+  // Load task messages for review chat
+  useEffect(() => {
+    if (task.status === "review" || task.status === "in_progress") {
+      api<{ messages: { role: string; content: string; createdAt: number }[] }>(`/messages?taskId=${task.id}`)
+        .then((data) => {
+          if (data.messages) {
+            setReviewChat(data.messages.map((m) => ({ role: m.role, content: m.content, ts: m.createdAt })));
+          }
+        })
+        .catch(() => {});
+    }
+  }, [task.id, task.status]);
+
+  useEffect(() => {
+    reviewEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [reviewChat.length]);
+
+  const handleReviewSend = async () => {
+    if (!reviewMsg.trim() || reviewLoading) return;
+    const msg = reviewMsg.trim();
+    setReviewMsg("");
+    setReviewChat((prev) => [...prev, { role: "user", content: msg, ts: Date.now() }]);
+    setReviewLoading(true);
+
+    try {
+      // Send to Tech Lead via a simple endpoint
+      const data = await api<{ reply: string }>(`/tasks/${task.id}/review-chat`, {
+        method: "POST",
+        body: JSON.stringify({ message: msg }),
+      });
+      if (data.reply) {
+        setReviewChat((prev) => [...prev, { role: "assistant", content: data.reply, ts: Date.now() }]);
+      }
+    } catch {
+      setReviewChat((prev) => [...prev, { role: "assistant", content: "Erro ao processar. Tente novamente.", ts: Date.now() }]);
+    } finally {
+      setReviewLoading(false);
+    }
+  };
   const priority = PRIORITY_STYLES[task.priority] ?? PRIORITY_STYLES.medium;
   const statusInfo = STATUS_LABELS[task.status] ?? STATUS_LABELS.created;
   const agent = task.assignedAgentId ? agentMap.get(task.assignedAgentId) : null;
@@ -954,6 +998,94 @@ function TaskDetailPanel({ task, agentMap, projectMap, agentActivity, onClose, o
                   {specExpanded ? t("common.less") : t("common.more")}
                 </button>
               )}
+            </div>
+          )}
+
+          {/* Review Chat — talk to Tech Lead when task is in review */}
+          {(task.status === "review" || task.status === "in_progress") && (
+            <div>
+              <h3 className="text-[10px] font-semibold uppercase tracking-wider text-neutral-fg3 mb-2">
+                {task.status === "review" ? "Review — Tech Lead" : "Acompanhamento"}
+              </h3>
+              <div className="rounded-lg border border-stroke2 overflow-hidden">
+                {/* Chat messages */}
+                <div className="max-h-[200px] overflow-y-auto p-3 space-y-2 bg-neutral-bg2/30">
+                  {reviewChat.length === 0 && (
+                    <p className="text-[10px] text-neutral-fg-disabled italic text-center py-4">
+                      {task.status === "review"
+                        ? "Converse com o Tech Lead sobre esta review"
+                        : "Acompanhe o progresso da task"}
+                    </p>
+                  )}
+                  {reviewChat.map((msg, i) => (
+                    <div key={i} className={cn("flex", msg.role === "user" ? "justify-end" : "justify-start")}>
+                      <div className={cn(
+                        "max-w-[85%] rounded-lg px-3 py-2 text-[11px] leading-relaxed",
+                        msg.role === "user"
+                          ? "bg-brand text-white rounded-br-none"
+                          : "bg-neutral-bg2 text-neutral-fg1 border border-stroke2 rounded-bl-none"
+                      )}>
+                        {msg.content}
+                      </div>
+                    </div>
+                  ))}
+                  {reviewLoading && (
+                    <div className="flex justify-start">
+                      <div className="bg-neutral-bg2 border border-stroke2 rounded-lg rounded-bl-none px-3 py-2">
+                        <Loader2 className="h-3 w-3 animate-spin text-neutral-fg3" />
+                      </div>
+                    </div>
+                  )}
+                  <div ref={reviewEndRef} />
+                </div>
+
+                {/* Input */}
+                <div className="flex items-center gap-2 border-t border-stroke2 px-3 py-2 bg-neutral-bg1">
+                  <input
+                    type="text"
+                    value={reviewMsg}
+                    onChange={(e) => setReviewMsg(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && handleReviewSend()}
+                    placeholder={task.status === "review" ? "Pergunte ao Tech Lead..." : "Envie uma mensagem..."}
+                    className="flex-1 bg-transparent text-[12px] text-neutral-fg1 placeholder:text-neutral-fg-disabled outline-none"
+                  />
+                  <button
+                    onClick={handleReviewSend}
+                    disabled={!reviewMsg.trim() || reviewLoading}
+                    className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-brand text-white transition-colors hover:bg-brand-hover disabled:opacity-30"
+                  >
+                    <Send className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+
+                {/* Review actions */}
+                {task.status === "review" && (
+                  <div className="flex items-center gap-2 border-t border-stroke2 px-3 py-2 bg-neutral-bg-subtle">
+                    <button
+                      onClick={async () => {
+                        try {
+                          await api(`/tasks/${task.id}`, { method: "PATCH", body: JSON.stringify({ status: "done" }) });
+                        } catch {}
+                      }}
+                      className="flex-1 flex items-center justify-center gap-1.5 rounded-md bg-success py-2 text-[11px] font-semibold text-white transition-colors hover:bg-success/90"
+                    >
+                      <CheckCircle2 className="h-3.5 w-3.5" />
+                      Aprovar
+                    </button>
+                    <button
+                      onClick={async () => {
+                        try {
+                          await api(`/tasks/${task.id}`, { method: "PATCH", body: JSON.stringify({ status: "assigned" }) });
+                        } catch {}
+                      }}
+                      className="flex-1 flex items-center justify-center gap-1.5 rounded-md border border-danger/30 bg-danger-light py-2 text-[11px] font-semibold text-danger transition-colors hover:bg-danger/20"
+                    >
+                      <XCircle className="h-3.5 w-3.5" />
+                      Rejeitar
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>

@@ -826,7 +826,12 @@ app.post("/api/docs-gen/generate-api", (_req, res) => {
 });
 
 // Messages stub
-app.get("/api/messages", (_req, res) => {
+app.get("/api/messages", (req, res) => {
+  const { taskId } = req.query;
+  if (taskId && typeof taskId === "string") {
+    const msgs = db.select().from(schema.messages).where(eq(schema.messages.taskId, taskId)).all();
+    return res.json({ messages: msgs });
+  }
   res.json({ messages: [] });
 });
 

@@ -552,4 +552,81 @@ router.get("/:id/logs", (req, res) => {
   res.json({ logs });
 });
 
+// POST /:id/review-chat — chat with Tech Lead about a task in review
+router.post("/:id/review-chat", async (req, res) => {
+  const task = db.select().from(tasks).where(eq(tasks.id, req.params.id)).get();
+  if (!task) return res.status(404).json({ error: "task not found" });
+
+  const { message } = req.body;
+  if (!message?.trim()) return res.status(400).json({ error: "message required" });
+
+  // Find Tech Lead agent
+  const { agents } = await import("../db.js");
+  const techLead = db.select().from(agents).where(eq(agents.role, "tech_lead")).get();
+  if (!techLead) return res.json({ reply: "Tech Lead não encontrado." });
+
+  // Get project context
+  const project = db.select().from(projects).where(eq(projects.id, task.projectId)).get();
+
+  // Build context with task info
+  const systemPrompt = `${techLead.systemPrompt}
+
+## Review Context
+You are reviewing a completed task. Respond concisely.
+
+Task: ${task.title}
+Description: ${task.description || "N/A"}
+Status: ${task.status}
+Result: ${task.result?.slice(0, 500) || "N/A"}
+Project: ${project?.name ?? "Unknown"}
+
+The user is asking about this task's review. Help them decide whether to approve or reject.`;
+
+  // Get previous messages for this task
+  const { messages } = await import("../db.js");
+  const prevMessages = db.select().from(messages)
+    .where(eq(messages.taskId, req.params.id))
+    .all()
+    .map(m => ({ role: m.role as "user" | "assistant", content: m.content }));
+
+  // Add current message
+  const allMessages = [...prevMessages, { role: "user" as const, content: message.trim() }];
+
+  // Call Claude via Anthropic SDK
+  try {
+    const Anthropic = (await import("@anthropic-ai/sdk")).default;
+    const { readFileSync: rfs } = await import("fs");
+    const { join: pathJoin } = await import("path");
+    const { homedir: hd } = await import("os");
+
+    const credPath = pathJoin(hd(), ".claude", ".credentials.json");
+    const token = JSON.parse(rfs(credPath, "utf-8"))?.claudeAiOauth?.accessToken;
+    if (!token) return res.json({ reply: "Token Claude não encontrado. Execute /login." });
+
+    const client = new Anthropic({
+      apiKey: token,
+      defaultHeaders: { "Authorization": `Bearer ${token}`, "anthropic-beta": "oauth-2025-04-20" },
+    });
+
+    const response = await client.messages.create({
+      model: techLead.model,
+      max_tokens: 512,
+      system: systemPrompt,
+      messages: allMessages,
+    });
+
+    const reply = response.content.filter(b => b.type === "text").map(b => b.type === "text" ? b.text : "").join("");
+
+    // Save both messages to DB
+    const { nanoid: nid } = await import("nanoid");
+    const now = Date.now();
+    db.insert(messages).values({ id: nid(), projectId: task.projectId, taskId: task.id, agentId: null, role: "user", content: message.trim(), createdAt: now }).run();
+    db.insert(messages).values({ id: nid(), projectId: task.projectId, taskId: task.id, agentId: techLead.id, role: "assistant", content: reply, createdAt: now + 1 }).run();
+
+    res.json({ reply });
+  } catch (err) {
+    res.json({ reply: "Erro ao comunicar com o Tech Lead. Tente novamente." });
+  }
+});
+
 export default router;
