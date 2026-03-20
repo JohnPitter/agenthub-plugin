@@ -76,6 +76,7 @@ router.post("/integrations/whatsapp/connect", async (req, res) => {
 
     // Get io from the app for socket events
     const io = req.app.get("io");
+    if (io) whatsapp.setIo(io);
 
     // QR code callback → emit via socket.io
     whatsapp.onQr((qr: string) => {

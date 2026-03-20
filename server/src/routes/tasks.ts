@@ -341,6 +341,19 @@ router.patch("/:id", (req, res) => {
 
   const updated = db.select().from(tasks).where(eq(tasks.id, req.params.id)).get();
 
+  // Auto-execute when task moves to assigned
+  if (status === "assigned" && status !== task.status) {
+    const taskIdForExec = req.params.id;
+    const io = req.app.get("io") ?? null;
+    res.json({ task: updated });
+    import("../lib/task-executor.js").then(({ executeTask }) => {
+      executeTask(taskIdForExec, io).catch((err: Error) => {
+        console.error(`[TaskExecutor] Auto-execute failed: ${err.message}`);
+      });
+    }).catch(() => {});
+    return;
+  }
+
   // Auto-commit + PR when task reaches done (async, non-blocking, after response)
   if (status === "done" && status !== task.status) {
     const taskIdForGit = req.params.id;

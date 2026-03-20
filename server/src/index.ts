@@ -17,6 +17,7 @@ import agentsRouter from "./routes/agents.js";
 import filesRouter from "./routes/files.js";
 import integrationsRouter from "./routes/integrations.js";
 import { seedAgents } from "./seed.js";
+import { getWhatsAppService } from "./lib/whatsapp-service.js";
 import { getClaudeToken } from "./lib/claude-token.js";
 import { scanWorkspace } from "./lib/scanner.js";
 import { db, schema, DATA_DIR } from "./db.js";
@@ -434,6 +435,34 @@ app.post("/api/projects/:id/git/sync", (req, res) => {
   }
 });
 
+// Task execution endpoint — triggers agent workflow
+app.post("/api/tasks/:id/execute", async (req, res) => {
+  const task = db.select().from(schema.tasks).where(eq(schema.tasks.id, req.params.id)).get();
+  if (!task) return res.status(404).json({ error: "Task not found" });
+
+  if (task.status !== "assigned") {
+    return res.status(400).json({
+      error: `Task must be in 'assigned' status to execute (current: ${task.status})`,
+    });
+  }
+
+  const socketIo = req.app.get("io");
+  res.json({ status: "executing", taskId: task.id });
+
+  // Execute async (non-blocking) — import dynamically to avoid issues before file exists
+  import("./lib/task-executor.js").then(({ executeTask }) => {
+    executeTask(task.id, socketIo).catch((err: Error) => {
+      console.error(`[TaskExecutor] Failed: ${err.message}`);
+      db.update(schema.tasks).set({
+        status: "failed", result: err.message, updatedAt: Date.now(),
+      }).where(eq(schema.tasks.id, task.id)).run();
+      if (socketIo) socketIo.emit("task:status", { taskId: task.id, status: "failed" });
+    });
+  }).catch(() => {
+    console.error("[TaskExecutor] Module not found — task-executor.ts not compiled");
+  });
+});
+
 // API routes
 app.use("/api/projects", projectsRouter);
 app.use("/api/tasks", tasksRouter);
@@ -563,6 +592,30 @@ app.get("/api/storage/usage", (_req, res) => {
 // Admin setup status — always complete for local
 app.get("/api/admin/setup-status", (_req, res) => {
   res.json({ isSetupComplete: true, steps: { hasAdmin: true, hasApiKey: true, hasPlans: true } });
+});
+
+// User language preference
+app.get("/api/settings/language", (_req, res) => {
+  const setting = db.select().from(schema.integrations)
+    .where(eq(schema.integrations.type, "user_language")).get();
+  res.json({ language: setting?.config ?? "pt-BR" });
+});
+app.put("/api/settings/language", (req, res) => {
+  const { language } = req.body;
+  if (!language) return res.status(400).json({ error: "language required" });
+  const existing = db.select().from(schema.integrations)
+    .where(eq(schema.integrations.type, "user_language")).get();
+  const now = Date.now();
+  if (existing) {
+    db.update(schema.integrations).set({ config: language, updatedAt: now })
+      .where(eq(schema.integrations.id, existing.id)).run();
+  } else {
+    db.insert(schema.integrations).values({
+      id: nanoid(), type: "user_language", status: "active", config: language,
+      createdAt: now, updatedAt: now,
+    }).run();
+  }
+  res.json({ language });
 });
 
 // Notifications stubs
@@ -722,6 +775,7 @@ const generateApiEndpoints = () => {
     "PATCH /api/tasks/:id": { desc: "Update task fields or advance status", group: "Tasks" },
     "DELETE /api/tasks/:id": { desc: "Delete a task", group: "Tasks" },
     "GET /api/tasks/:id/logs": { desc: "Task audit log entries", group: "Tasks" },
+    "POST /api/tasks/:id/execute": { desc: "Execute task with assigned agent (triggers agentic loop)", group: "Tasks" },
     "GET /api/agents": { desc: "List all agents", group: "Agents" },
     "POST /api/agents": { desc: "Create a new agent", group: "Agents" },
     "PATCH /api/agents/:id": { desc: "Update agent configuration", group: "Agents" },
@@ -998,6 +1052,34 @@ httpServer.listen(PREFERRED_PORT, () => {
   if (!process.env.NO_OPEN) {
     open(`http://localhost:${actualPort}`).catch(() => {
       // Ignore if browser can't be opened
+    });
+  }
+
+  // Auto-reconnect WhatsApp after server + socket.io are ready
+  const whatsappIntegration = db.select().from(schema.integrations)
+    .where(eq(schema.integrations.type, "whatsapp")).get();
+
+  if (whatsappIntegration && whatsappIntegration.status !== "disconnected") {
+    console.log("[WhatsApp] Previous session found — auto-reconnecting...");
+    const config = whatsappIntegration.config ? JSON.parse(whatsappIntegration.config) : {};
+    const whatsapp = getWhatsAppService();
+    whatsapp.setIo(io);
+    if (config.allowedNumber) whatsapp.setAllowedNumber(config.allowedNumber);
+
+    const wId = whatsappIntegration.id;
+    whatsapp.onStatusChange((s) => {
+      db.update(schema.integrations).set({ status: s, updatedAt: Date.now() })
+        .where(eq(schema.integrations.id, wId)).run();
+      io.emit("integration:status", { type: "whatsapp", status: s });
+    });
+
+    whatsapp.connect().then(() => {
+      console.log("[WhatsApp] Auto-reconnect successful");
+    }).catch(() => {
+      console.log("[WhatsApp] Auto-reconnect failed");
+      db.update(schema.integrations).set({ status: "disconnected", updatedAt: Date.now() })
+        .where(eq(schema.integrations.id, wId)).run();
+      io.emit("integration:status", { type: "whatsapp", status: "disconnected" });
     });
   }
 });
