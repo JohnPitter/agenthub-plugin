@@ -190,6 +190,16 @@ async function executeAction(action: Record<string, unknown>, io?: { emit: (e: s
         .where(eq(schema.tasks.id, task.id)).run();
       const updatedTask = db.select().from(schema.tasks).where(eq(schema.tasks.id, task.id)).get();
       if (io && updatedTask) io.emit("task:updated", { task: updatedTask });
+
+      // Auto-trigger execution when task moves to assigned (same as PATCH endpoint)
+      if (newStatus === "assigned" && !process.env.DISABLE_AUTO_EXECUTE) {
+        import("../lib/task-executor.js").then(({ executeTask }) => {
+          executeTask(task.id, io ?? { emit: () => {} }).catch((err: Error) => {
+            console.error(`[TaskExecutor] WhatsApp auto-execute failed: ${err.message}`);
+          });
+        }).catch(() => {});
+      }
+
       return `Task *${task.title}* atualizada: ${task.status} → ${newStatus}`;
     }
 
