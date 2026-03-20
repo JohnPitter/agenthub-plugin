@@ -5,9 +5,7 @@ import { LayoutDashboard, BarChart3, Users, ListTodo, Settings, Zap, FolderOpen,
 import { useWorkspaceStore } from "../../stores/workspace-store";
 import { useChatStore } from "../../stores/chat-store";
 import { AgentAvatar } from "../agents/agent-avatar";
-import { StorageUsageBar } from "../common/storage-usage-bar";
-import { TeamSwitcher } from "../teams/team-switcher";
-import { useTeamStore } from "../../stores/team-store";
+
 import { getSocket } from "../../lib/socket";
 import { api } from "../../lib/utils";
 import { cn } from "../../lib/utils";
@@ -34,22 +32,6 @@ const AGENT_STATUS_COLORS: Record<string, string> = {
   working: "bg-success",
 };
 
-interface PlanUsage {
-  plan: {
-    id: string;
-    name: string;
-    maxProjects: number;
-    maxTasksPerMonth: number;
-    priceMonthly: string;
-    features: string[];
-  } | null;
-  usage: {
-    projects: number;
-    tasksThisMonth: number;
-  };
-}
-
-const IS_LOCAL = (typeof import.meta !== "undefined" && (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_LOCAL_MODE === "true");
 
 /** Claude Code usage widget (local mode) — shows model usage from Anthropic API */
 interface UsageBucket {
@@ -138,81 +120,6 @@ function ClaudeUsageWidget({ collapsed }: { collapsed: boolean }) {
   );
 }
 
-/** Cloud plan usage widget */
-function UsageWidget({ collapsed }: { collapsed: boolean }) {
-  const [data, setData] = useState<PlanUsage | null>(null);
-
-  useEffect(() => {
-    api<PlanUsage>("/plans/my-usage").then(setData).catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    const socket = getSocket();
-    const handlePlanUpdate = () => {
-      api<PlanUsage>("/plans/my-usage").then(setData).catch(() => {});
-    };
-    socket.on("plan:updated", handlePlanUpdate);
-    return () => { socket.off("plan:updated", handlePlanUpdate); };
-  }, []);
-
-  if (collapsed || !data) return null;
-
-  const plan = data.plan;
-  const projectPercent = plan ? Math.min((data.usage.projects / plan.maxProjects) * 100, 100) : 0;
-  const taskPercent = plan ? Math.min((data.usage.tasksThisMonth / plan.maxTasksPerMonth) * 100, 100) : 0;
-
-  const projectColor = projectPercent >= 90 ? "bg-danger" : projectPercent >= 70 ? "bg-warning" : "bg-success";
-  const taskColor = taskPercent >= 90 ? "bg-danger" : taskPercent >= 70 ? "bg-warning" : "bg-success";
-
-  return (
-    <div className="mx-7 mt-6 rounded-lg border border-stroke2 bg-neutral-bg3/50 p-3">
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-[11px] font-semibold text-neutral-fg2">
-          {plan ? plan.name : "Sem plano"}
-        </span>
-        {plan && (
-          <span className="text-[10px] font-medium text-brand tabular-nums">
-            {plan.priceMonthly === "0" ? "Free" : `$${plan.priceMonthly}/mês`}
-          </span>
-        )}
-      </div>
-
-      {plan && (
-        <div className="flex flex-col gap-2">
-          <div>
-            <div className="flex items-center justify-between mb-0.5">
-              <span className="text-[10px] text-neutral-fg3">Projetos</span>
-              <span className="text-[10px] text-neutral-fg-disabled tabular-nums">
-                {data.usage.projects}/{plan.maxProjects}
-              </span>
-            </div>
-            <div className="h-1 rounded-full bg-neutral-bg2 overflow-hidden">
-              <div className={cn("h-full rounded-full transition-all duration-500", projectColor)} style={{ width: `${projectPercent}%` }} />
-            </div>
-          </div>
-
-          <div>
-            <div className="flex items-center justify-between mb-0.5">
-              <span className="text-[10px] text-neutral-fg3">Tasks/mês</span>
-              <span className="text-[10px] text-neutral-fg-disabled tabular-nums">
-                {data.usage.tasksThisMonth}/{plan.maxTasksPerMonth}
-              </span>
-            </div>
-            <div className="h-1 rounded-full bg-neutral-bg2 overflow-hidden">
-              <div className={cn("h-full rounded-full transition-all duration-500", taskColor)} style={{ width: `${taskPercent}%` }} />
-            </div>
-          </div>
-        </div>
-      )}
-
-      {!plan && (
-        <Link to="/settings" className="text-[10px] text-brand hover:text-brand-hover transition-colors">
-          Selecionar plano →
-        </Link>
-      )}
-    </div>
-  );
-}
 
 export function AppSidebar() {
   const { t } = useTranslation();
@@ -223,7 +130,6 @@ export function AppSidebar() {
   const agents = useWorkspaceStore((s) => s.agents);
   const setAgents = useWorkspaceStore((s) => s.setAgents);
   const agentActivity = useChatStore((s) => s.agentActivity);
-  const activeTeamId = useTeamStore((s) => s.activeTeamId);
   const { id: routeProjectId } = useParams();
   const location = useLocation();
   const [desktopCollapsed, setDesktopCollapsed] = useState(false);
@@ -245,11 +151,10 @@ export function AppSidebar() {
   const collapsed = isTablet ? !desktopCollapsed : desktopCollapsed;
 
   const refetchProjects = useCallback(() => {
-    const query = activeTeamId ? `?teamId=${activeTeamId}` : "";
-    api<{ projects: Project[] }>(`/projects${query}`).then(({ projects }) => {
+    api<{ projects: Project[] }>("/projects").then(({ projects }) => {
       setProjects(projects);
     }).catch(() => {});
-  }, [setProjects, activeTeamId]);
+  }, [setProjects]);
 
   useEffect(() => {
     refetchProjects();
@@ -344,9 +249,6 @@ export function AppSidebar() {
         )}
       </div>
 
-      {/* Team Switcher — hidden in local mode */}
-      {!IS_LOCAL && <TeamSwitcher collapsed={collapsed} />}
-
       {/* Main Nav */}
       <nav className="mt-4 flex flex-col gap-1.5 px-7">
         {NAV_ITEMS.map((item) => {
@@ -378,7 +280,7 @@ export function AppSidebar() {
       </nav>
 
       {/* Claude Code CLI Usage */}
-      {IS_LOCAL ? <ClaudeUsageWidget collapsed={collapsed} /> : <UsageWidget collapsed={collapsed} />}
+      <ClaudeUsageWidget collapsed={collapsed} />
 
       {/* Projects section */}
       {projects.length > 0 && (
@@ -454,9 +356,6 @@ export function AppSidebar() {
           </p>
         </div>
       )}
-
-      {/* Storage usage */}
-      {!collapsed && !IS_LOCAL && <StorageUsageBar />}
 
       {/* Agent status indicators */}
       {agents.length > 0 && (

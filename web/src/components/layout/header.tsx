@@ -1,13 +1,12 @@
 import { useRef, useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { useLocation, useParams, Link } from "react-router-dom";
-import { Search, Bell, MessageSquare, Settings, LogOut, User, HelpCircle } from "lucide-react";
+import { Search, Bell, MessageSquare, Settings, User, HelpCircle } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { useWorkspaceStore } from "../../stores/workspace-store";
 import { useNotificationStore, useUnreadCount } from "../../stores/notification-store";
 import { useCommandPalette } from "../../hooks/use-command-palette";
 import { useUserStore } from "../../stores/user-store";
-import { useAuthStore } from "../../stores/auth-store";
 import { getAgentAvatarUrl } from "../../lib/agent-avatar";
 import { NotificationPanel } from "./notification-panel";
 import { CommandPalette } from "../ui/command-palette";
@@ -39,14 +38,13 @@ export function Header() {
   const userName = useUserStore((s) => s.name);
   const userAvatar = useUserStore((s) => s.avatar);
   const userColor = useUserStore((s) => s.color);
-  const authUser = useAuthStore((s) => s.user);
   const bellRef = useRef<HTMLDivElement>(null);
   const profileRef = useRef<HTMLDivElement>(null);
   const [profileOpen, setProfileOpen] = useState(false);
 
   const userAvatarUrl = getAgentAvatarUrl(userAvatar, 36);
-  const displayAvatar = authUser?.avatarUrl ?? userAvatarUrl;
-  const displayName = authUser?.name ?? userName;
+  const displayAvatar = userAvatarUrl;
+  const displayName = userName;
   const userInitials = displayName
     .split(" ")
     .map((w) => w[0])
@@ -213,8 +211,8 @@ export function Header() {
             <div className="absolute right-0 top-full mt-2 w-56 rounded-xl bg-neutral-bg1 border border-stroke2 shadow-16 animate-fade-up overflow-hidden">
               {/* User info */}
               <div className="px-4 py-3 border-b border-stroke2">
-                <p className="text-[13px] font-semibold text-neutral-fg1">{authUser?.name ?? userName}</p>
-                <p className="text-[11px] text-neutral-fg3 mt-0.5">{authUser?.login ? `@${authUser.login}` : "Administrador"}</p>
+                <p className="text-[13px] font-semibold text-neutral-fg1">{userName}</p>
+                <p className="text-[11px] text-neutral-fg3 mt-0.5">Administrador</p>
               </div>
 
               {/* Menu items */}
@@ -235,19 +233,6 @@ export function Header() {
                   <Settings className="h-4 w-4 text-neutral-fg3" />
                   {t("settings.title")}
                 </Link>
-              </div>
-
-              <div className="border-t border-stroke2 py-1.5">
-                <button
-                  onMouseDown={(e) => e.stopPropagation()}
-                  onClick={() => {
-                    useAuthStore.getState().logout();
-                  }}
-                  className="flex w-full items-center gap-3 px-4 py-2.5 text-[13px] font-medium text-danger transition-colors hover:bg-danger-light"
-                >
-                  <LogOut className="h-4 w-4" />
-                  {t("auth.logout")}
-                </button>
               </div>
             </div>
           )}

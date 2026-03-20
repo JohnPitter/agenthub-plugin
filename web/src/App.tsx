@@ -1,17 +1,11 @@
 import { useEffect, lazy, Suspense } from "react";
-import { Routes, Route } from "react-router-dom";
+import { Routes, Route, Navigate } from "react-router-dom";
 import { Loader2 } from "lucide-react";
 import { AppLayout } from "./components/layout/app-layout";
-import { ProtectedRoute } from "./components/auth/protected-route";
 import { ErrorBoundary } from "./components/ui/error-boundary";
-import { LandingPage } from "./routes/landing";
-import { LoginPage } from "./routes/login";
-import { SetupWizard } from "./routes/setup-wizard";
-import { Navigate } from "react-router-dom";
 import { Dashboard } from "./routes/dashboard";
 import { getSocket } from "./lib/socket";
 import { useWorkspaceStore } from "./stores/workspace-store";
-import { api } from "./lib/utils";
 import type { Agent, AgentUpdatedEvent } from "./shared";
 
 // Lazy-loaded route pages (heavy deps: Monaco, Recharts, large components)
@@ -29,7 +23,6 @@ const AgentsPage = lazy(() => import("./routes/agents").then((m) => ({ default: 
 const TasksPage = lazy(() => import("./routes/tasks").then((m) => ({ default: m.TasksPage })));
 const SettingsPage = lazy(() => import("./routes/settings").then((m) => ({ default: m.SettingsPage })));
 const DocsPage = lazy(() => import("./routes/docs").then((m) => ({ default: m.DocsPage })));
-const TeamSettings = lazy(() => import("./components/teams/team-settings").then((m) => ({ default: m.TeamSettings })));
 
 function RouteLoader() {
   return (
@@ -40,8 +33,6 @@ function RouteLoader() {
 }
 
 export function App() {
-  const isLocalMode = (import.meta as unknown as { env: Record<string, string> }).env?.VITE_LOCAL_MODE === "true";
-
   useEffect(() => {
     const socket = getSocket();
     const onAgentUpdated = (data: AgentUpdatedEvent) => {
@@ -58,37 +49,27 @@ export function App() {
   return (
     <ErrorBoundary>
       <Routes>
-        {/* Public routes — in local mode, redirect / to /dashboard */}
-        <Route path="/" element={isLocalMode ? <Navigate to="/dashboard" replace /> : <LandingPage />} />
-        <Route path="/login" element={isLocalMode ? <Navigate to="/dashboard" replace /> : <LoginPage />} />
+        {/* Redirect root to dashboard */}
+        <Route path="/" element={<Navigate to="/dashboard" replace />} />
 
-        {/* Setup wizard (protected) */}
-        <Route element={<ProtectedRoute />}>
-          <Route path="/setup" element={<ErrorBoundary><SetupWizard /></ErrorBoundary>} />
-        </Route>
-
-        {/* Protected routes */}
-        <Route element={<ProtectedRoute />}>
-          <Route element={<AppLayout />}>
-            <Route path="/dashboard" element={<ErrorBoundary><Dashboard /></ErrorBoundary>} />
-            <Route path="/projects" element={<ErrorBoundary><Suspense fallback={<RouteLoader />}><ProjectsPage /></Suspense></ErrorBoundary>} />
-            <Route path="/project/:id" element={<ErrorBoundary><Suspense fallback={<RouteLoader />}><ProjectOverview /></Suspense></ErrorBoundary>} />
-            <Route path="/project/:id/board" element={<ErrorBoundary><Suspense fallback={<RouteLoader />}><ProjectBoard /></Suspense></ErrorBoundary>} />
-            <Route path="/project/:id/tasks" element={<ErrorBoundary><Suspense fallback={<RouteLoader />}><ProjectTasks /></Suspense></ErrorBoundary>} />
-            <Route path="/project/:id/agents" element={<ErrorBoundary><Suspense fallback={<RouteLoader />}><ProjectAgents /></Suspense></ErrorBoundary>} />
-            <Route path="/project/:id/files" element={<ErrorBoundary><Suspense fallback={<RouteLoader />}><ProjectFiles /></Suspense></ErrorBoundary>} />
-            <Route path="/project/:id/prs" element={<ErrorBoundary><Suspense fallback={<RouteLoader />}><ProjectPRs /></Suspense></ErrorBoundary>} />
-            <Route path="/project/:id/preview" element={<ErrorBoundary><Suspense fallback={<RouteLoader />}><ProjectPreview /></Suspense></ErrorBoundary>} />
-            <Route path="/project/:id/settings" element={<ErrorBoundary><Suspense fallback={<RouteLoader />}><ProjectSettings /></Suspense></ErrorBoundary>} />
-            <Route path="/agents" element={<ErrorBoundary><Suspense fallback={<RouteLoader />}><AgentsPage /></Suspense></ErrorBoundary>} />
-            <Route path="/tasks" element={<ErrorBoundary><Suspense fallback={<RouteLoader />}><TasksPage /></Suspense></ErrorBoundary>} />
-            <Route path="/analytics" element={<ErrorBoundary><Suspense fallback={<RouteLoader />}><Analytics /></Suspense></ErrorBoundary>} />
-            <Route path="/docs" element={<ErrorBoundary><Suspense fallback={<RouteLoader />}><DocsPage /></Suspense></ErrorBoundary>} />
-            <Route path="/settings" element={<ErrorBoundary><Suspense fallback={<RouteLoader />}><SettingsPage /></Suspense></ErrorBoundary>} />
-            <Route path="/settings/integrations" element={<div className="p-6">Integrations</div>} />
-            <Route path="/teams/:id/settings" element={<ErrorBoundary><Suspense fallback={<RouteLoader />}><TeamSettings /></Suspense></ErrorBoundary>} />
-
-          </Route>
+        {/* All routes under AppLayout */}
+        <Route element={<AppLayout />}>
+          <Route path="/dashboard" element={<ErrorBoundary><Dashboard /></ErrorBoundary>} />
+          <Route path="/projects" element={<ErrorBoundary><Suspense fallback={<RouteLoader />}><ProjectsPage /></Suspense></ErrorBoundary>} />
+          <Route path="/project/:id" element={<ErrorBoundary><Suspense fallback={<RouteLoader />}><ProjectOverview /></Suspense></ErrorBoundary>} />
+          <Route path="/project/:id/board" element={<ErrorBoundary><Suspense fallback={<RouteLoader />}><ProjectBoard /></Suspense></ErrorBoundary>} />
+          <Route path="/project/:id/tasks" element={<ErrorBoundary><Suspense fallback={<RouteLoader />}><ProjectTasks /></Suspense></ErrorBoundary>} />
+          <Route path="/project/:id/agents" element={<ErrorBoundary><Suspense fallback={<RouteLoader />}><ProjectAgents /></Suspense></ErrorBoundary>} />
+          <Route path="/project/:id/files" element={<ErrorBoundary><Suspense fallback={<RouteLoader />}><ProjectFiles /></Suspense></ErrorBoundary>} />
+          <Route path="/project/:id/prs" element={<ErrorBoundary><Suspense fallback={<RouteLoader />}><ProjectPRs /></Suspense></ErrorBoundary>} />
+          <Route path="/project/:id/preview" element={<ErrorBoundary><Suspense fallback={<RouteLoader />}><ProjectPreview /></Suspense></ErrorBoundary>} />
+          <Route path="/project/:id/settings" element={<ErrorBoundary><Suspense fallback={<RouteLoader />}><ProjectSettings /></Suspense></ErrorBoundary>} />
+          <Route path="/agents" element={<ErrorBoundary><Suspense fallback={<RouteLoader />}><AgentsPage /></Suspense></ErrorBoundary>} />
+          <Route path="/tasks" element={<ErrorBoundary><Suspense fallback={<RouteLoader />}><TasksPage /></Suspense></ErrorBoundary>} />
+          <Route path="/analytics" element={<ErrorBoundary><Suspense fallback={<RouteLoader />}><Analytics /></Suspense></ErrorBoundary>} />
+          <Route path="/docs" element={<ErrorBoundary><Suspense fallback={<RouteLoader />}><DocsPage /></Suspense></ErrorBoundary>} />
+          <Route path="/settings" element={<ErrorBoundary><Suspense fallback={<RouteLoader />}><SettingsPage /></Suspense></ErrorBoundary>} />
+          <Route path="/settings/integrations" element={<div className="p-6">Integrations</div>} />
         </Route>
       </Routes>
     </ErrorBoundary>
