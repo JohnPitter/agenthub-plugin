@@ -4,6 +4,7 @@ import { join } from "path";
 import { existsSync, readdirSync, unlinkSync, readFileSync } from "fs";
 import https from "https";
 import { homedir } from "os";
+import Anthropic from "@anthropic-ai/sdk";
 import { DATA_DIR, db, schema } from "../db.js";
 import { eq } from "drizzle-orm";
 
@@ -275,12 +276,21 @@ async function executeAction(action: Record<string, unknown>, io?: { emit: (e: s
   }
 }
 
-/** Get Claude token from credentials */
-function getClaudeAccessToken(): string | null {
+/** Create Anthropic client using OAuth token from Claude credentials */
+function createAnthropicClient(): Anthropic | null {
   try {
     const raw = readFileSync(join(homedir(), ".claude", ".credentials.json"), "utf-8");
-    return JSON.parse(raw)?.claudeAiOauth?.accessToken ?? null;
-  } catch { return null; }
+    const token = JSON.parse(raw)?.claudeAiOauth?.accessToken;
+    if (!token) return null;
+    return new Anthropic({
+      apiKey: token,
+      defaultHeaders: {
+        "anthropic-beta": "oauth-2025-04-20,interleaved-thinking-2025-05-14",
+      },
+    });
+  } catch {
+    return null;
+  }
 }
 
 /** Conversation history per phone number */
@@ -299,55 +309,36 @@ function addToHistory(from: string, role: string, content: string) {
   if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
 }
 
-/** Call Claude API to get agent response */
-function callClaude(systemPrompt: string, messages: { role: string; content: string }[], model: string): Promise<string> {
-  return new Promise((resolve) => {
-    const token = getClaudeAccessToken();
-    if (!token) { resolve("Erro: token Claude n\u00e3o encontrado. Execute /login no Claude Code."); return; }
+/** Call Claude API using the official Anthropic SDK */
+async function callClaude(systemPrompt: string, messages: { role: string; content: string }[], model: string): Promise<string> {
+  const client = createAnthropicClient();
+  if (!client) return "Erro: token Claude não encontrado. Execute /login no Claude Code.";
 
-    const body = JSON.stringify({
+  try {
+    const response = await client.messages.create({
       model,
       max_tokens: 1024,
       system: systemPrompt,
-      messages,
+      messages: messages as Anthropic.MessageParam[],
     });
 
-    const req = https.request({
-      hostname: "api.anthropic.com",
-      path: "/v1/messages",
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${token}`,
-        "anthropic-version": "2023-06-01",
-        "anthropic-beta": "oauth-2025-04-20,interleaved-thinking-2025-05-14",
-        "Content-Type": "application/json",
-        "Content-Length": Buffer.byteLength(body),
-      },
-    }, (res) => {
-      let data = "";
-      res.on("data", (chunk: string) => { data += chunk; });
-      res.on("end", () => {
-        try {
-          const parsed = JSON.parse(data);
-          if (parsed.content) {
-            const textParts = parsed.content.filter((c: { type: string }) => c.type === "text");
-            if (textParts.length > 0) {
-              resolve(textParts.map((c: { text: string }) => c.text).join(""));
-            } else {
-              resolve("Desculpe, n\u00e3o consegui processar sua mensagem.");
-            }
-          } else {
-            console.error("[WhatsApp] Claude API error:", data.slice(0, 300));
-            resolve("Erro na API. Tente novamente.");
-          }
-        } catch { resolve("Erro ao processar resposta."); }
-      });
-    });
-    req.on("error", () => resolve("Erro de conex\u00e3o com a API."));
-    req.setTimeout(30000, () => { req.destroy(); resolve("Timeout na resposta."); });
-    req.write(body);
-    req.end();
-  });
+    const textParts = response.content.filter((block) => block.type === "text");
+    if (textParts.length > 0) {
+      return textParts.map((block) => ("text" in block ? block.text : "")).join("");
+    }
+    return "Desculpe, não consegui processar sua mensagem.";
+  } catch (err) {
+    if (err instanceof Anthropic.RateLimitError) {
+      console.error("[WhatsApp] Claude API rate limited after retries");
+      return "API sobrecarregada. Tente novamente em alguns segundos.";
+    }
+    if (err instanceof Anthropic.AuthenticationError) {
+      console.error("[WhatsApp] Claude API token expired or invalid");
+      return "Token expirado. Execute /login no Claude Code para renovar.";
+    }
+    console.error("[WhatsApp] Claude API error:", err);
+    return "Erro na API. Tente novamente.";
+  }
 }
 
 /** Safely extract a serialized WID string from any value */
