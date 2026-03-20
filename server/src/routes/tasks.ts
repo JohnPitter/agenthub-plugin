@@ -208,17 +208,15 @@ async function cleanupTaskWorkspace(
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* best-effort */ }
   }
 
-  // 2. Delete git branch (if exists)
+  // 2. Handle git branch based on reason
   if (task.branch && existsSync(join(projectPath, ".git"))) {
-    try {
-      // Delete local branch
-      execFileSync("git", ["branch", "-D", task.branch], { cwd: projectPath, timeout: 5000, stdio: "pipe" });
-    } catch { /* branch may not exist locally */ }
-
-    try {
-      // Delete remote branch
-      execFileSync("git", ["push", "origin", "--delete", task.branch], { cwd: projectPath, timeout: 30000, stdio: "pipe" });
-    } catch { /* no remote or branch doesn't exist remotely */ }
+    if (reason === "cancelled") {
+      // Cancelled → delete branch immediately (work is discarded)
+      try { execFileSync("git", ["branch", "-D", task.branch], { cwd: projectPath, timeout: 5000, stdio: "pipe" }); } catch { /* ignore */ }
+      try { execFileSync("git", ["push", "origin", "--delete", task.branch], { cwd: projectPath, timeout: 30000, stdio: "pipe" }); } catch { /* ignore */ }
+    }
+    // done → keep branch alive until PR is merged (GitHub needs it for the diff)
+    // Branch cleanup happens via GitHub's auto-delete after merge setting
   }
 
   // 3. Close GitHub PR if cancelled
