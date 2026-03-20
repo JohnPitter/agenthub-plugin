@@ -53,7 +53,6 @@ export function Header() {
     .join("")
     .toUpperCase();
 
-  const activeProjectId = useWorkspaceStore((s) => s.activeProjectId);
   const project = projects.find((p) => p.id === projectId);
   const segment = location.pathname.split("/").pop();
   const routeLabelKey = segment && ROUTE_LABEL_KEYS[segment] ? ROUTE_LABEL_KEYS[segment] : null;
@@ -133,20 +132,18 @@ export function Header() {
 
       {/* Right */}
       <div className="flex items-center gap-3">
-        {activeProjectId && (
-          <button
-            onClick={toggleChatPanel}
-            className={cn(
-              "flex items-center gap-2 rounded-lg px-4 py-2 text-[13px] font-semibold transition-all duration-200",
-              chatPanelOpen
-                ? "bg-gradient-to-r from-brand to-purple text-white shadow-brand"
-                : "bg-neutral-bg2 text-neutral-fg2 hover:bg-neutral-bg-hover border border-stroke",
-            )}
-          >
-            <MessageSquare className="h-4 w-4" strokeWidth={2} />
-            Chat
-          </button>
-        )}
+        <button
+          onClick={toggleChatPanel}
+          className={cn(
+            "flex items-center gap-2 rounded-lg px-4 py-2 text-[13px] font-semibold transition-all duration-200",
+            chatPanelOpen
+              ? "bg-gradient-to-r from-brand to-purple text-white shadow-brand"
+              : "bg-neutral-bg2 text-neutral-fg2 hover:bg-neutral-bg-hover border border-stroke",
+          )}
+        >
+          <MessageSquare className="h-4 w-4" strokeWidth={2} />
+          Chat
+        </button>
 
         <button
           onClick={() => setCommandOpen(true)}

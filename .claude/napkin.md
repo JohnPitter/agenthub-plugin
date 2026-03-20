@@ -53,3 +53,4 @@
 - WhatsApp auto-reconnect: must be inside `httpServer.listen()` callback so `io` is available
 - Task execution auto-triggers when status moves to `assigned` (via dynamic import in tasks.ts PATCH handler)
 - Board kanban columns: created, assigned, in_progress, review, done, failed, cancelled — NO `pending` column
+- Plugin is GLOBAL — not project-scoped. Remove all `activeProjectId` guards that block functionality. Keep projectId in POST bodies as optional.

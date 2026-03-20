@@ -25,17 +25,16 @@ export function TelegramConfig() {
 
   // Fetch current status
   const fetchStatus = useCallback(async () => {
-    if (!activeProjectId) return;
     try {
       const data = await api<{ status: ConnectionStatus; integrationId: string | null }>(
-        `/integrations/telegram/status?projectId=${activeProjectId}`
+        `/integrations/telegram/status`
       );
       setStatus(data.status);
       setIntegrationId(data.integrationId);
     } catch {
       // Integration might not exist yet
     }
-  }, [activeProjectId]);
+  }, []);
 
   useEffect(() => {
     fetchStatus();
@@ -64,10 +63,6 @@ export function TelegramConfig() {
   }, []);
 
   const handleConnect = async () => {
-    if (!activeProjectId) {
-      setError(t("integrationErrors.selectProjectFirst"));
-      return;
-    }
     if (!botToken.trim()) {
       setError(t("telegram.tokenRequired"));
       return;
@@ -96,8 +91,6 @@ export function TelegramConfig() {
   };
 
   const handleDisconnect = async () => {
-    if (!activeProjectId) return;
-
     setLoading(true);
     setError(null);
 
@@ -207,7 +200,7 @@ export function TelegramConfig() {
         {status === "disconnected" || status === "error" ? (
           <button
             onClick={handleConnect}
-            disabled={loading || !activeProjectId || !botToken.trim()}
+            disabled={loading || !botToken.trim()}
             className="btn-primary flex items-center gap-2 rounded-lg px-5 py-2.5 text-[13px] font-medium text-white disabled:opacity-50"
           >
             {loading ? (

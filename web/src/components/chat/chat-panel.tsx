@@ -232,11 +232,6 @@ export function ChatPanel() {
     setActiveThread(null);
   };
 
-  // Don't render if no active project
-  if (!activeProjectId) {
-    return null;
-  }
-
   return (
     <div
       className={cn(

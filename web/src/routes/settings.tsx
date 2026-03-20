@@ -7,7 +7,6 @@ import { WhatsAppConfig } from "../components/integrations/whatsapp-config";
 import { TelegramConfig } from "../components/integrations/telegram-config";
 import { SUPPORTED_LANGUAGES } from "../i18n/i18n";
 import { useThemeStore } from "../stores/theme-store";
-import { useWorkspaceStore } from "../stores/workspace-store";
 import { useUserStore } from "../stores/user-store";
 import { AVATAR_PRESETS, getAgentAvatarUrl } from "../lib/agent-avatar";
 import { SkillList } from "../components/skills/skill-list";
@@ -497,16 +496,6 @@ function GitHubIntegration() {
 export function SettingsPage() {
   const { t, i18n } = useTranslation();
   const [activeTab, setActiveTab] = useState<SettingsTab>("perfil");
-  const projects = useWorkspaceStore((s) => s.projects);
-  const activeProjectId = useWorkspaceStore((s) => s.activeProjectId);
-  const setActiveProject = useWorkspaceStore((s) => s.setActiveProject);
-
-  // Auto-select first project if none is active (so integrations work)
-  useEffect(() => {
-    if (!activeProjectId && projects.length > 0) {
-      setActiveProject(projects[0].id);
-    }
-  }, [activeProjectId, projects, setActiveProject]);
 
   return (
     <div className="flex h-full flex-col">
@@ -603,39 +592,9 @@ export function SettingsPage() {
                   </p>
                 </div>
 
-                {/* Project selector */}
-                {projects.length > 1 && (
-                  <div className="card-glow p-4">
-                    <label className="mb-1.5 block text-[12px] font-semibold uppercase tracking-wider text-neutral-fg2">
-                      {t("project.overview")}
-                    </label>
-                    <select
-                      value={activeProjectId ?? ""}
-                      onChange={(e) => setActiveProject(e.target.value || null)}
-                      className="w-full rounded-md border border-stroke bg-neutral-bg2 px-4 py-3 text-[14px] text-neutral-fg1 outline-none transition-all focus:border-brand focus:ring-2 focus:ring-brand-light"
-                    >
-                      <option value="" disabled>{t("project.overview")}</option>
-                      {projects.map((p) => (
-                        <option key={p.id} value={p.id}>{p.name}</option>
-                      ))}
-                    </select>
-                  </div>
-                )}
-
-                {projects.length === 0 && (
-                  <div className="card-glow px-6 py-8 text-center text-[13px] text-neutral-fg-disabled">
-                    {t("dashboard.noProjects")}
-                  </div>
-                )}
-
                 <GitHubIntegration />
-
-                {activeProjectId && (
-                  <>
-                    <WhatsAppConfig />
-                    <TelegramConfig />
-                  </>
-                )}
+                <WhatsAppConfig />
+                <TelegramConfig />
               </div>
             )}
 
