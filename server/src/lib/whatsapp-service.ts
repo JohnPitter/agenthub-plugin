@@ -276,6 +276,77 @@ async function executeAction(action: Record<string, unknown>, io?: { emit: (e: s
       return `*Resumo*\nProjetos: ${projects.length}\nTasks: ${tasks.length} (${inProgress} em progresso, ${done} concluidas)\nAgentes ativos: ${agents.length}`;
     }
 
+    case "approve_task": {
+      const taskId = action.taskId as string;
+      let task = db.select().from(schema.tasks).where(eq(schema.tasks.id, taskId)).get();
+      if (!task) {
+        const all = db.select().from(schema.tasks).all();
+        task = all.find(t => t.title.toLowerCase().includes(taskId.toLowerCase())) ?? undefined;
+      }
+      if (!task) return "Task nao encontrada.";
+      if (task.status !== "review") return `Task *${task.title}* nao esta em review (status: ${task.status}).`;
+      db.update(schema.tasks).set({ status: "done", completedAt: Date.now(), updatedAt: Date.now() }).where(eq(schema.tasks.id, task.id)).run();
+      if (io) {
+        io.emit("task:status", { taskId: task.id, status: "done" });
+        io.emit("task:updated", { task: db.select().from(schema.tasks).where(eq(schema.tasks.id, task.id)).get() });
+      }
+      return `Task *${task.title}* aprovada!`;
+    }
+
+    case "reject_task": {
+      const taskId = action.taskId as string;
+      let task = db.select().from(schema.tasks).where(eq(schema.tasks.id, taskId)).get();
+      if (!task) {
+        const all = db.select().from(schema.tasks).all();
+        task = all.find(t => t.title.toLowerCase().includes(taskId.toLowerCase())) ?? undefined;
+      }
+      if (!task) return "Task nao encontrada.";
+      if (task.status !== "review") return `Task *${task.title}* nao esta em review (status: ${task.status}).`;
+      db.update(schema.tasks).set({ status: "assigned", updatedAt: Date.now() }).where(eq(schema.tasks.id, task.id)).run();
+      if (io) {
+        io.emit("task:status", { taskId: task.id, status: "assigned" });
+        io.emit("task:updated", { task: db.select().from(schema.tasks).where(eq(schema.tasks.id, task.id)).get() });
+      }
+      // Auto re-execute
+      if (!process.env.DISABLE_AUTO_EXECUTE) {
+        import("../lib/task-executor.js").then(({ executeTask }) => {
+          executeTask(task!.id, io ?? { emit: () => {} }).catch(() => {});
+        }).catch(() => {});
+      }
+      return `Task *${task.title}* rejeitada e reenviada para execucao.`;
+    }
+
+    case "cancel_task": {
+      const taskId = action.taskId as string;
+      let task = db.select().from(schema.tasks).where(eq(schema.tasks.id, taskId)).get();
+      if (!task) {
+        const all = db.select().from(schema.tasks).all();
+        task = all.find(t => t.title.toLowerCase().includes(taskId.toLowerCase())) ?? undefined;
+      }
+      if (!task) return "Task nao encontrada.";
+      if (task.status === "done" || task.status === "cancelled") return `Task *${task.title}* ja esta ${task.status}.`;
+      db.update(schema.tasks).set({ status: "cancelled", updatedAt: Date.now() }).where(eq(schema.tasks.id, task.id)).run();
+      if (io) {
+        io.emit("task:status", { taskId: task.id, status: "cancelled" });
+        io.emit("task:updated", { task: db.select().from(schema.tasks).where(eq(schema.tasks.id, task.id)).get() });
+      }
+      return `Task *${task.title}* cancelada.`;
+    }
+
+    case "task_status": {
+      const taskId = action.taskId as string;
+      let task = db.select().from(schema.tasks).where(eq(schema.tasks.id, taskId)).get();
+      if (!task) {
+        const all = db.select().from(schema.tasks).all();
+        task = all.find(t => t.title.toLowerCase().includes(taskId.toLowerCase())) ?? undefined;
+      }
+      if (!task) return "Task nao encontrada.";
+      const agentName = task.assignedAgentId
+        ? db.select().from(schema.agents).where(eq(schema.agents.id, task.assignedAgentId)).get()?.name ?? "N/A"
+        : "Nenhum";
+      return `*${task.title}*\nStatus: ${task.status}\nAgente: ${agentName}\nPrioridade: ${task.priority}\n${task.result ? `Resultado: ${task.result.slice(0, 200)}` : ""}`;
+    }
+
     default:
       return "Acao nao reconhecida.";
   }
@@ -371,8 +442,32 @@ export class WhatsAppService {
 
   private readonly tokenDir = join(DATA_DIR, "whatsapp-tokens");
 
-  setIo(io: { emit: (e: string, d: unknown) => void }) {
+  setIo(io: { emit: (e: string, d: unknown) => void; on?: (e: string, cb: (...args: unknown[]) => void) => void }) {
     this._io = io;
+
+    // Listen for task status changes to notify via WhatsApp
+    if (io.on && this.allowedNumber) {
+      const sendTo = `${this.allowedNumber.replace(/\D/g, "")}@c.us`;
+      io.on("task:status", (data: unknown) => {
+        if (!this.client || this.status !== "connected") return;
+        const d = data as { taskId?: string; status?: string; agentId?: string };
+        if (!d.taskId || !d.status) return;
+
+        const task = db.select().from(schema.tasks).where(eq(schema.tasks.id, d.taskId)).get();
+        if (!task) return;
+
+        const statusEmoji: Record<string, string> = {
+          assigned: "📋", in_progress: "⚙️", review: "👀", done: "✅", failed: "❌", cancelled: "🚫",
+        };
+        const emoji = statusEmoji[d.status] || "📌";
+
+        // Only notify for meaningful transitions
+        if (["in_progress", "review", "done", "failed"].includes(d.status)) {
+          const msg = `${emoji} *${task.title}*\nStatus: ${d.status}${d.status === "review" ? "\n\nResponda *aprovar* ou *rejeitar* para esta task." : ""}${d.status === "done" ? "\nTask concluida com sucesso!" : ""}${d.status === "failed" ? `\nErro: ${task.result?.slice(0, 100) || "desconhecido"}` : ""}`;
+          this.client.sendText(sendTo, msg).catch(() => {});
+        }
+      });
+    }
   }
 
   getConnectionStatus(): ConnectionStatus {
@@ -555,6 +650,17 @@ WHEN ADVANCING TASK STATUS:
 1. If user doesn't specify which task, use list_tasks to show them and ask which one
 2. Map the user's language to the correct English status name
 3. Use advance_status with the task ID and English status
+
+REVIEW ACTIONS (when user wants to approve, reject, or check task status):
+- "aprovar/approve task X" → Use approve_task with taskId
+- "rejeitar/reject task X" → Use reject_task with taskId (re-executes automatically)
+- "cancelar task X" → Use cancel_task with taskId
+- "status da task X" / "como esta a task X" → Use task_status with taskId
+- If user doesn't specify which task, list tasks in review first
+
+REAL-TIME UPDATES:
+- When the user asks "como esta a task" or "status", always use task_status to get live data
+- Proactively inform the user about task results when they ask
 `;
 
         const fullPrompt = teamLead.systemPrompt + "\n" + contextBlock;

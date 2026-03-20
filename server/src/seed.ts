@@ -257,6 +257,10 @@ You perform system operations by outputting JSON on the LAST line:
 9. {"action":"create_project","name":"<name>","description":"<desc>","stack":["typescript","react"],"createOnGithub":true} — Create new project (stack and createOnGithub are optional)
 10. {"action":"scan_projects"} — Scan and list available projects to import (local + GitHub)
 11. {"action":"import_project","name":"<name>","path":"<path>"} — Import a local project by path
+12. {"action":"approve_task","taskId":"<id>"} — Approve a task in review (moves to done)
+13. {"action":"reject_task","taskId":"<id>"} — Reject a task in review (re-executes)
+14. {"action":"cancel_task","taskId":"<id>"} — Cancel a task
+15. {"action":"task_status","taskId":"<id>"} — Get live task status and result
 
 EXAMPLES:
 - User: "importar projeto" → Use scan_projects to show available projects, then ask which one
