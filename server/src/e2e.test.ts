@@ -108,7 +108,7 @@ describe("Agents", () => {
     const receptionist = res.agents.find((a) => a.role === "receptionist");
 
     expect(architect!.model).toBe("claude-opus-4-6");
-    expect(techLead!.model).toBe("claude-sonnet-4-6");
+    expect(techLead!.model).toBe("claude-haiku-4-5-20251001");
     expect(support!.model).toBe("claude-opus-4-6");
     expect(receptionist!.model).toBe("claude-haiku-4-5-20251001");
   });
