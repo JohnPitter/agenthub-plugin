@@ -1,12 +1,13 @@
 import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
-import { Plus, Power, Settings, Users, GitBranch, Trash2, Brain, ScrollText } from "lucide-react";
+import { Plus, Power, Settings, Users, GitBranch, Trash2, Brain, ScrollText, Zap, Network, ArrowDown, CheckCircle2, Search, Merge, Shield } from "lucide-react";
 import { CommandBar } from "../components/layout/command-bar";
 import { getSocket } from "../lib/socket";
 import { useAgents } from "../hooks/use-agents";
 import { AgentConfigDialog } from "../components/agents/agent-config-dialog";
 import { AgentAvatar } from "../components/agents/agent-avatar";
 import { WorkflowEditor } from "../components/agents/workflow-editor";
+import { ExecutionModeSelector } from "../components/agents/execution-mode-selector";
 import { ConfirmDialog } from "../components/ui/confirm-dialog";
 import { useWorkflowStore } from "../stores/workflow-store";
 import { useWorkspaceStore } from "../stores/workspace-store";
@@ -35,6 +36,267 @@ function saveWorkflowToStorage(wf: AgentWorkflow) {
   localStorage.setItem(WORKFLOW_STORAGE_KEY, JSON.stringify(wf));
 }
 
+/* ═══ V2 Flow Visualization ═══ */
+
+function V2FlowNode({ agent, label, badges, children }: {
+  agent?: Agent;
+  label: string;
+  badges?: React.ReactNode;
+  children?: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-xl border border-stroke bg-neutral-bg2 px-5 py-4 transition-all hover:shadow-md hover:border-brand/30 group">
+      <div className="flex items-center gap-3">
+        {agent ? (
+          <AgentAvatar name={agent.name} avatar={agent.avatar} color={agent.color} size="sm" />
+        ) : (
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-success/10">
+            <CheckCircle2 className="h-4 w-4 text-success" />
+          </div>
+        )}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="text-[13px] font-semibold text-neutral-fg1">{label}</span>
+            {badges}
+          </div>
+          {agent && (
+            <div className="flex items-center gap-2 mt-0.5">
+              <span className="text-[11px] text-neutral-fg3">{agent.name}</span>
+              <span className="text-[10px] text-neutral-fg3/60">·</span>
+              <span className="text-[10px] text-neutral-fg3/60">{agent.model.includes("haiku") ? "Haiku" : agent.model.includes("opus") ? "Opus" : "Sonnet"}</span>
+            </div>
+          )}
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function V2FlowVisualization({ agents }: { agents: Agent[] }) {
+  const { t } = useTranslation();
+  const byRole = (role: string) => agents.find((a) => a.role === role);
+
+  const techLead = byRole("tech_lead");
+  const architect = byRole("architect");
+  const frontendDev = byRole("frontend_dev");
+  const backendDev = byRole("backend_dev");
+  const qa = byRole("qa");
+  const devAgents = [frontendDev, backendDev].filter(Boolean) as Agent[];
+
+  return (
+    <div className="mx-auto max-w-xl animate-fade-up">
+      {/* Header */}
+      <div className="flex items-center gap-3 mb-6">
+        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-warning/10">
+          <Zap className="h-5 w-5 text-warning" />
+        </div>
+        <div>
+          <h3 className="text-[16px] font-semibold text-neutral-fg1 tracking-tight">
+            {t("agents.agentTeamsTitle", "Agent Teams v2")}
+          </h3>
+          <p className="text-[12px] text-neutral-fg3">
+            {t("agents.v2flow.subtitle", "Fluxo dinâmico com execução paralela e QA adaptativo")}
+          </p>
+        </div>
+      </div>
+
+      <div className="space-y-1">
+        {/* Step 1: Triage */}
+        <V2FlowNode
+          agent={techLead}
+          label={t("agents.v2flow.triage", "Triage")}
+          badges={
+            <span className="text-[9px] font-semibold text-warning bg-warning/10 px-1.5 py-0.5 rounded-full flex items-center gap-0.5">
+              <Search className="h-2.5 w-2.5" />
+              {t("agents.v2flow.analyzes", "analisa")}
+            </span>
+          }
+        >
+          <p className="text-[10px] text-neutral-fg3 mt-1">{t("agents.v2flow.triageDesc", "Analisa a task e cria o plano de execução")}</p>
+        </V2FlowNode>
+
+        <div className="flex justify-center"><ArrowDown className="h-4 w-4 text-neutral-fg-disabled" /></div>
+
+        {/* Step 2: Planning (optional) */}
+        <V2FlowNode
+          agent={architect}
+          label={t("agents.v2flow.planning", "Planning")}
+          badges={
+            <span className="text-[9px] font-medium text-neutral-fg3 bg-neutral-bg3 px-1.5 py-0.5 rounded-full">
+              {t("agents.v2flow.optional", "opcional")}
+            </span>
+          }
+        >
+          <p className="text-[10px] text-neutral-fg3 mt-1">{t("agents.v2flow.planningDesc", "Cria plano detalhado para tasks moderate/complex")}</p>
+        </V2FlowNode>
+
+        <div className="flex justify-center"><ArrowDown className="h-4 w-4 text-neutral-fg-disabled" /></div>
+
+        {/* Step 3: Implementation (parallel) */}
+        <div className="rounded-xl border border-brand/30 bg-brand/5 p-4 transition-all hover:shadow-md">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="text-[13px] font-semibold text-neutral-fg1">{t("agents.v2flow.implementation", "Implementation")}</span>
+            <span className="text-[9px] font-semibold text-brand bg-brand/10 px-1.5 py-0.5 rounded-full flex items-center gap-0.5">
+              <Network className="h-2.5 w-2.5" />
+              {t("agents.v2flow.parallel", "paralelo")}
+            </span>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            {devAgents.map((agent) => (
+              <div key={agent.id} className="flex items-center gap-2.5 rounded-lg border border-stroke bg-neutral-bg2 px-3 py-2.5">
+                <AgentAvatar name={agent.name} avatar={agent.avatar} color={agent.color} size="sm" />
+                <div>
+                  <span className="text-[12px] font-medium text-neutral-fg1 block">{agent.name}</span>
+                  <span className="text-[10px] text-neutral-fg3">{agent.model.includes("haiku") ? "Haiku" : agent.model.includes("opus") ? "Opus" : "Sonnet"}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+          <p className="text-[10px] text-neutral-fg3 mt-2">{t("agents.v2flow.implementationDesc", "Cada dev no seu worktree isolado, executando simultaneamente")}</p>
+        </div>
+
+        <div className="flex justify-center"><ArrowDown className="h-4 w-4 text-neutral-fg-disabled" /></div>
+
+        {/* Step 4: Merge */}
+        <V2FlowNode
+          agent={techLead}
+          label={t("agents.v2flow.merge", "Merge")}
+          badges={
+            <span className="text-[9px] font-semibold text-info bg-info/10 px-1.5 py-0.5 rounded-full flex items-center gap-0.5">
+              <Merge className="h-2.5 w-2.5" />
+              {t("agents.v2flow.autoResolve", "auto-resolve")}
+            </span>
+          }
+        >
+          <p className="text-[10px] text-neutral-fg3 mt-1">{t("agents.v2flow.mergeDesc", "Une os resultados dos worktrees e resolve conflitos")}</p>
+        </V2FlowNode>
+
+        <div className="flex justify-center"><ArrowDown className="h-4 w-4 text-neutral-fg-disabled" /></div>
+
+        {/* Step 5: QA */}
+        <V2FlowNode
+          agent={qa}
+          label={t("agents.v2flow.qa", "QA Review")}
+          badges={
+            <span className="text-[9px] font-semibold text-success bg-success/10 px-1.5 py-0.5 rounded-full flex items-center gap-0.5">
+              <Shield className="h-2.5 w-2.5" />
+              {t("agents.v2flow.adaptive", "adaptativo")}
+            </span>
+          }
+        >
+          <p className="text-[10px] text-neutral-fg3 mt-1">{t("agents.v2flow.qaDesc", "Modelo adaptativo: Haiku (simple) → Sonnet (moderate) → Opus (complex)")}</p>
+        </V2FlowNode>
+
+        <div className="flex justify-center"><ArrowDown className="h-4 w-4 text-neutral-fg-disabled" /></div>
+
+        {/* Step 6: Done */}
+        <V2FlowNode label={t("agents.v2flow.done", "Done")}>
+          <p className="text-[10px] text-neutral-fg3 mt-1">{t("agents.v2flow.doneDesc", "Auto-commit com co-authors, PR se GitHub configurado")}</p>
+        </V2FlowNode>
+      </div>
+
+      {/* Complexity legend */}
+      <div className="mt-6 rounded-xl border border-stroke bg-neutral-bg2 p-4">
+        <p className="text-[11px] font-semibold text-neutral-fg2 mb-3 tracking-wider uppercase">
+          {t("agents.v2flow.complexityTitle", "Complexidade")}
+        </p>
+        <div className="grid grid-cols-3 gap-3">
+          <div className="rounded-lg border border-success/20 bg-success/5 p-3 text-center">
+            <span className="inline-block rounded-full bg-success/10 px-2.5 py-1 text-[10px] font-semibold text-success mb-1.5">simple</span>
+            <p className="text-[10px] text-neutral-fg3">1 agente direto</p>
+            <p className="text-[10px] text-neutral-fg3">QA: Haiku ou skip</p>
+          </div>
+          <div className="rounded-lg border border-warning/20 bg-warning/5 p-3 text-center">
+            <span className="inline-block rounded-full bg-warning/10 px-2.5 py-1 text-[10px] font-semibold text-warning mb-1.5">moderate</span>
+            <p className="text-[10px] text-neutral-fg3">Architect + devs</p>
+            <p className="text-[10px] text-neutral-fg3">QA: Sonnet</p>
+          </div>
+          <div className="rounded-lg border border-danger/20 bg-danger/5 p-3 text-center">
+            <span className="inline-block rounded-full bg-danger/10 px-2.5 py-1 text-[10px] font-semibold text-danger mb-1.5">complex</span>
+            <p className="text-[10px] text-neutral-fg3">Architect + paralelo</p>
+            <p className="text-[10px] text-neutral-fg3">QA: Opus</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ═══ Team Insights (shared memories) ═══ */
+
+const INSIGHT_TYPE_STYLES: Record<string, { bg: string; color: string }> = {
+  insight: { bg: "bg-brand-light", color: "text-brand" },
+  discovery: { bg: "bg-purple-light", color: "text-purple" },
+  warning: { bg: "bg-warning/10", color: "text-warning" },
+  pattern: { bg: "bg-info/10", color: "text-info" },
+  dependency: { bg: "bg-success/10", color: "text-success" },
+  learning: { bg: "bg-brand-light", color: "text-brand" },
+  correction: { bg: "bg-danger/10", color: "text-danger" },
+  context: { bg: "bg-neutral-bg3", color: "text-neutral-fg2" },
+};
+
+function TeamInsightsSection({ memories, setMemories }: {
+  memories: { id: string; type: string; content: string; createdAt: string; agentName?: string; agentId?: string | null }[];
+  setMemories: React.Dispatch<React.SetStateAction<typeof memories>>;
+}) {
+  const { t } = useTranslation();
+
+  const handleDelete = async (memoryId: string, agentId: string | null | undefined) => {
+    const aid = agentId ?? "system";
+    try {
+      await api(`/agents/${aid}/memories/${memoryId}`, { method: "DELETE" });
+      setMemories((prev) => prev.filter((m) => m.id !== memoryId));
+    } catch { /* ignore */ }
+  };
+
+  return (
+    <div className="card-glow p-6 mb-6">
+      <h3 className="text-[12px] font-semibold uppercase tracking-wider text-neutral-fg2 mb-3 flex items-center gap-2">
+        <Brain className="h-3.5 w-3.5" />
+        {t("agents.teamInsights", "Team Insights")}
+        {memories.length > 0 && (
+          <span className="rounded-full bg-brand-light px-2 py-0.5 text-[10px] font-semibold text-brand">
+            {memories.length}
+          </span>
+        )}
+      </h3>
+      {memories.length > 0 ? (
+        <div className="max-h-64 overflow-y-auto space-y-2">
+          {memories.map((mem) => {
+            const typeStyle = INSIGHT_TYPE_STYLES[mem.type] ?? INSIGHT_TYPE_STYLES.learning;
+            return (
+              <div key={mem.id} className="group flex items-start gap-2 rounded-lg bg-neutral-bg3/50 px-3 py-2 hover:bg-neutral-bg3/80 transition-colors">
+                <span className={cn("shrink-0 rounded-md px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wider", typeStyle.bg, typeStyle.color)}>
+                  {mem.type}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-[12px] text-neutral-fg2 leading-relaxed">{mem.content}</p>
+                  <p className="text-[10px] text-neutral-fg3 mt-0.5">
+                    por {mem.agentName ?? "System"}
+                  </p>
+                </div>
+                <button
+                  onClick={() => handleDelete(mem.id, mem.agentId)}
+                  className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity text-neutral-fg-disabled hover:text-danger"
+                  title={t("common.delete")}
+                >
+                  <Trash2 className="h-3 w-3" />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="flex flex-col items-center gap-2 py-6 text-center">
+          <ScrollText className="h-6 w-6 text-neutral-fg-disabled" />
+          <p className="text-[12px] text-neutral-fg3">{t("agents.noInsights", "Nenhum insight registrado ainda. Os agentes registram descobertas durante a execução das tasks.")}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function AgentsPage() {
   const { t } = useTranslation();
   const { agents, fetchAgents, toggleAgent, updateAgent, createAgent, deleteAgent } = useAgents();
@@ -42,8 +304,9 @@ export function AgentsPage() {
   const [configAgent, setConfigAgent] = useState<Agent | null>(null);
   const [activeTab, setActiveTab] = useState<AgentsTab>("agentes");
   const [savedWorkflow, setSavedWorkflow] = useState<AgentWorkflow | null>(loadWorkflow);
-  const [memories, setMemories] = useState<{ id: string; type: string; content: string; createdAt: string }[]>([]);
+  const [memories, setMemories] = useState<{ id: string; type: string; content: string; createdAt: string; agentName?: string; agentRole?: string; agentId?: string | null }[]>([]);
   const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [executionMode, setExecutionMode] = useState("v1");
 
   // Workflow store for API integration
   const activeProjectId = useWorkspaceStore((s) => s.activeProjectId);
@@ -79,14 +342,12 @@ export function AgentsPage() {
     };
   }, [fetchAgents]);
 
-  // Fetch memories when selected agent changes
+  // Fetch all team insights (global memories)
   useEffect(() => {
-    const id = selectedId ?? agents[0]?.id;
-    if (!id) { setMemories([]); return; }
-    api<{ memories: { id: string; type: string; content: string; createdAt: string }[] }>(`/agents/${id}/memories`)
+    api<{ memories: { id: string; type: string; content: string; createdAt: string; agentName?: string; agentRole?: string; agentId?: string | null }[] }>("/memories")
       .then((data) => setMemories(data.memories ?? []))
       .catch(() => setMemories([]));
-  }, [selectedId, agents]);
+  }, []);
 
   const activeCount = agents.filter((a) => a.isActive).length;
   const selected = agents.find((a) => a.id === selectedId) ?? agents[0] ?? null;
@@ -346,30 +607,8 @@ export function AgentsPage() {
                   </div>
                 </div>
 
-                {/* Memories */}
-                <div className="card-glow p-6 mb-6">
-                  <h3 className="text-[12px] font-semibold uppercase tracking-wider text-neutral-fg2 mb-3 flex items-center gap-2">
-                    <Brain className="h-3.5 w-3.5" />
-                    {t("agents.memories")}
-                  </h3>
-                  {memories.length > 0 ? (
-                    <div className="max-h-48 overflow-y-auto space-y-2">
-                      {memories.map((mem) => (
-                        <div key={mem.id} className="flex items-start gap-2 rounded-lg bg-neutral-bg3/50 px-3 py-2">
-                          <span className="shrink-0 rounded-md bg-brand-light px-2 py-0.5 text-[10px] font-semibold text-brand uppercase tracking-wider">
-                            {mem.type}
-                          </span>
-                          <p className="text-[12px] text-neutral-fg2 leading-relaxed line-clamp-3">{mem.content}</p>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="flex flex-col items-center gap-2 py-6 text-center">
-                      <ScrollText className="h-6 w-6 text-neutral-fg-disabled" />
-                      <p className="text-[12px] text-neutral-fg3">{t("agents.noMemories")}</p>
-                    </div>
-                  )}
-                </div>
+                {/* Team Insights (global memories) */}
+                <TeamInsightsSection memories={memories} setMemories={setMemories} />
 
                 {/* Actions */}
                 <div className="flex items-center gap-3">
@@ -420,17 +659,29 @@ export function AgentsPage() {
         </div>
       ) : (
         /* Workflow tab */
-        <div className="flex-1 overflow-hidden">
-          <WorkflowEditor
-            agents={agents}
-            workflow={savedWorkflow}
-            onSave={handleSaveWorkflow}
-            apiWorkflow={apiWorkflow}
-            workflows={workflows}
-            onSelectWorkflow={handleSelectWorkflow}
-            onSetDefault={handleSetDefault}
-            saving={saving}
-          />
+        <div className="flex-1 overflow-hidden flex flex-col">
+          <div className="px-6 pt-6">
+            <ExecutionModeSelector onModeChange={setExecutionMode} />
+          </div>
+
+          {executionMode === "v1" ? (
+            <div className="flex-1 overflow-hidden">
+              <WorkflowEditor
+                agents={agents}
+                workflow={savedWorkflow}
+                onSave={handleSaveWorkflow}
+                apiWorkflow={apiWorkflow}
+                workflows={workflows}
+                onSelectWorkflow={handleSelectWorkflow}
+                onSetDefault={handleSetDefault}
+                saving={saving}
+              />
+            </div>
+          ) : (
+            <div className="flex-1 overflow-auto p-6">
+              <V2FlowVisualization agents={agents} />
+            </div>
+          )}
         </div>
       )}
 

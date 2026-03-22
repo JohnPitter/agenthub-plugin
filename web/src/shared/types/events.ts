@@ -38,6 +38,11 @@ export interface ServerToClientEvents {
   "devserver:status": (data: DevServerStatusEvent) => void;
   "notification:new": (data: NotificationEvent) => void;
   "plan:updated": (data: Record<string, never>) => void;
+  "v2:triage": (data: V2TriageEvent) => void;
+  "v2:phase_start": (data: V2PhaseStartEvent) => void;
+  "v2:agent_progress": (data: V2AgentProgressEvent) => void;
+  "v2:agent_complete": (data: V2AgentCompleteEvent) => void;
+  "v2:phase_complete": (data: V2PhaseCompleteEvent) => void;
 }
 
 // Client → Server events
@@ -286,4 +291,38 @@ export interface NotificationEvent {
   body?: string;
   link?: string;
   createdAt: string;
+}
+
+export interface V2TriageEvent {
+  taskId: string;
+  complexity: string;
+  phases: { agents: string[]; parallel: boolean }[];
+  plan: string;
+}
+
+export interface V2PhaseStartEvent {
+  taskId: string;
+  phaseIndex: number;
+  agents: string[];
+  parallel: boolean;
+}
+
+export interface V2AgentProgressEvent {
+  taskId: string;
+  agentId: string;
+  agentRole: string;
+  status: string;
+  progress: number;
+  currentFile: string;
+}
+
+export interface V2AgentCompleteEvent {
+  taskId: string;
+  agentRole: string;
+  success: boolean;
+}
+
+export interface V2PhaseCompleteEvent {
+  taskId: string;
+  phaseIndex: number;
 }

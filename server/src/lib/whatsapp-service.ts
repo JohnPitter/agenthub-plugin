@@ -111,7 +111,7 @@ async function executeAction(action: Record<string, unknown>, io?: { emit: (e: s
 
       const stackLabel = stackArr.join(", ");
       const ghLabel = githubUrl ? `\nGitHub: ${githubUrl}` : "";
-      return `Projeto *${name.trim()}* criado com sucesso!\nStack: ${stackLabel}\nLocal: ${projectPath}${ghLabel}`;
+      return `Projeto *${name.trim()}* criado com sucesso!\nStack: ${stackLabel}\nLocal: ${projectPath}${ghLabel}\n\nAgora voce pode criar uma task para este projeto! Basta dizer algo como "criar uma task para ${name.trim()}".\nOu acesse o dashboard para gerenciar visualmente.`;
     }
 
     case "list_tasks": {
@@ -157,10 +157,13 @@ async function executeAction(action: Record<string, unknown>, io?: { emit: (e: s
       };
       db.insert(schema.tasks).values(task).run();
       if (io) {
+        console.log(`[WhatsApp] Emitting task:created for ${task.id}`);
         io.emit("task:created", { task });
         io.emit("task:status", { taskId: task.id, status: task.status, projectId: task.projectId });
+      } else {
+        console.warn("[WhatsApp] No io available — socket events NOT emitted for task creation");
       }
-      return `Task criada: *${title}* (${task.priority}) no projeto *${projectName}*`;
+      return `Task criada: *${title}* (${task.priority}) no projeto *${projectName}*\n\nPara iniciar o desenvolvimento, diga "mover para disponivel".\nVoce pode acompanhar o progresso em tempo real pelo dashboard ou perguntar "status da task" aqui.`;
     }
 
     case "advance_status": {
@@ -179,10 +182,10 @@ async function executeAction(action: Record<string, unknown>, io?: { emit: (e: s
         pending: ["assigned", "cancelled"],
         assigned: ["in_progress", "cancelled"],
         in_progress: ["review", "failed", "cancelled"],
-        review: ["done", "assigned", "failed"],
-        failed: ["pending", "assigned"],
+        review: ["done", "assigned", "failed", "cancelled"],
+        failed: ["pending", "assigned", "cancelled"],
         done: [],
-        cancelled: ["pending"],
+        cancelled: ["pending", "assigned"],
       };
       const allowed = VALID[task.status] ?? [];
       if (!allowed.includes(newStatus)) {
@@ -193,18 +196,43 @@ async function executeAction(action: Record<string, unknown>, io?: { emit: (e: s
       db.update(schema.tasks).set({ status: newStatus, updatedAt })
         .where(eq(schema.tasks.id, task.id)).run();
       const updatedTask = db.select().from(schema.tasks).where(eq(schema.tasks.id, task.id)).get();
-      if (io && updatedTask) io.emit("task:updated", { task: updatedTask });
+      if (io && updatedTask) {
+        console.log(`[WhatsApp] Emitting task:status ${task.status} → ${newStatus} for ${task.id}`);
+        io.emit("task:status", { taskId: task.id, status: newStatus, projectId: task.projectId });
+        io.emit("task:updated", { task: updatedTask });
+      } else if (!io) {
+        console.warn("[WhatsApp] No io available — socket events NOT emitted for status change");
+      }
 
       // Auto-trigger execution when task moves to assigned (same as PATCH endpoint)
       if (newStatus === "assigned" && !process.env.DISABLE_AUTO_EXECUTE) {
-        import("../lib/task-executor.js").then(({ executeTask }) => {
-          executeTask(task.id, io ?? { emit: () => {} }).catch((err: Error) => {
-            console.error(`[TaskExecutor] WhatsApp auto-execute failed: ${err.message}`);
-          });
-        }).catch(() => {});
+        // Check execution mode: v1 or v2
+        const modeRow = db.select().from(schema.integrations)
+          .where(eq(schema.integrations.type, "execution_mode")).get();
+        const isV2 = modeRow?.config === "v2";
+
+        if (isV2) {
+          import("../lib/task-executor-v2.js").then(({ executeTaskV2 }) => {
+            executeTaskV2(task.id, io ?? { emit: () => {} }).catch((err: Error) => {
+              console.error(`[TaskExecutorV2] WhatsApp auto-execute failed: ${err.message}`);
+            });
+          }).catch(() => {});
+        } else {
+          import("../lib/task-executor.js").then(({ executeTask }) => {
+            executeTask(task.id, io ?? { emit: () => {} }).catch((err: Error) => {
+              console.error(`[TaskExecutor] WhatsApp auto-execute failed: ${err.message}`);
+            });
+          }).catch(() => {});
+        }
       }
 
-      return `Task *${task.title}* atualizada: ${task.status} → ${newStatus}`;
+      const nextHints: Record<string, string> = {
+        assigned: "\n\nO workflow foi iniciado! Os agentes vao comecar a trabalhar nela automaticamente.\nAcompanhe em tempo real pelo dashboard ou pergunte \"status da task\" aqui.",
+        in_progress: "\n\nOs agentes estao trabalhando! Pergunte \"status da task\" para atualizacoes.",
+        review: "\n\nA task esta pronta para revisao. Diga \"aprovar\" ou \"rejeitar\" quando estiver pronto.",
+        done: "\n\nTask concluida com sucesso!",
+      };
+      return `Task *${task.title}* atualizada: ${task.status} → ${newStatus}${nextHints[newStatus] || ""}`;
     }
 
     case "scan_projects": {
@@ -263,7 +291,7 @@ async function executeAction(action: Record<string, unknown>, io?: { emit: (e: s
       db.insert(schema.projects).values(importedProject).run();
       if (io) io.emit("project:created", importedProject);
 
-      return `Projeto *${importedProject.name}* importado com sucesso!`;
+      return `Projeto *${importedProject.name}* importado com sucesso!\n\nAgora voce pode criar tasks para ele! Diga "criar task para ${importedProject.name}".`;
     }
 
     case "list_agents": {
@@ -348,7 +376,32 @@ async function executeAction(action: Record<string, unknown>, io?: { emit: (e: s
       const agentName = task.assignedAgentId
         ? db.select().from(schema.agents).where(eq(schema.agents.id, task.assignedAgentId)).get()?.name ?? "N/A"
         : "Nenhum";
-      return `*${task.title}*\nStatus: ${task.status}\nAgente: ${agentName}\nPrioridade: ${task.priority}\n${task.result ? `Resultado: ${task.result.slice(0, 200)}` : ""}`;
+
+      // Get real-time execution details from in-memory state
+      let executionDetail = "";
+      try {
+        const { getFullActivityState } = await import("./execution-state.js");
+        const state = getFullActivityState();
+        // Check if any agent is actively working on this task
+        for (const [, agentState] of Object.entries(state.agents)) {
+          if (agentState.taskId === task.id && agentState.status === "running") {
+            executionDetail += `\n⚙️ ${agentState.agentName} trabalhando (${agentState.progress}%)`;
+            if (agentState.currentTool) executionDetail += ` — ${agentState.currentTool}`;
+          }
+        }
+        // Check v2 state
+        const v2State = state.v2Tasks[task.id];
+        if (v2State) {
+          executionDetail += `\nComplexidade: ${v2State.complexity}`;
+          executionDetail += `\nPlano: ${v2State.plan}`;
+          v2State.phases.forEach((p, i) => {
+            const statusEmoji = p.status === "done" ? "✅" : p.status === "running" ? "⚙️" : "⏳";
+            executionDetail += `\n${statusEmoji} Fase ${i + 1}: ${p.agents.join(", ")}${p.parallel ? " (paralelo)" : ""}`;
+          });
+        }
+      } catch { /* non-critical */ }
+
+      return `*${task.title}*\nStatus: ${task.status}\nAgente: ${agentName}\nPrioridade: ${task.priority}${executionDetail}\n${task.result ? `\nResultado: ${task.result.slice(0, 200)}` : ""}`;
     }
 
     default:
@@ -459,10 +512,34 @@ function addToHistory(from: string, role: string, content: string) {
   if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
 }
 
-/** Call Claude API using the official Anthropic SDK */
-async function callClaude(systemPrompt: string, messages: { role: string; content: string }[], model: string): Promise<string> {
+/** Auto-refresh Claude token by running `claude login` in background */
+async function autoRefreshClaudeToken(): Promise<boolean> {
+  const { execFile } = await import("child_process");
+  return new Promise((resolve) => {
+    console.log("[WhatsApp] Auto-refreshing Claude token via 'claude login'...");
+    execFile("claude", ["login"], { timeout: 120000 }, (err) => {
+      if (err) {
+        console.error("[WhatsApp] Auto-login failed:", err.message);
+        resolve(false);
+      } else {
+        console.log("[WhatsApp] Auto-login successful — token refreshed");
+        resolve(true);
+      }
+    });
+  });
+}
+
+/** Call Claude API using the official Anthropic SDK (with auto-retry on 401) */
+async function callClaude(systemPrompt: string, messages: { role: string; content: string }[], model: string, retried = false): Promise<string> {
   const client = createAnthropicClient();
-  if (!client) return "Erro: token Claude não encontrado. Execute /login no Claude Code.";
+  if (!client) {
+    // No token at all — try auto-login first
+    if (!retried) {
+      const refreshed = await autoRefreshClaudeToken();
+      if (refreshed) return callClaude(systemPrompt, messages, model, true);
+    }
+    return "Erro: token Claude nao encontrado. Execute /login no Claude Code.";
+  }
 
   try {
     const response = await client.messages.create({
@@ -476,15 +553,19 @@ async function callClaude(systemPrompt: string, messages: { role: string; conten
     if (textParts.length > 0) {
       return textParts.map((block) => ("text" in block ? block.text : "")).join("");
     }
-    return "Desculpe, não consegui processar sua mensagem.";
+    return "Desculpe, nao consegui processar sua mensagem.";
   } catch (err) {
+    if (err instanceof Anthropic.AuthenticationError) {
+      console.error("[WhatsApp] Claude API 401 — token expired");
+      if (!retried) {
+        const refreshed = await autoRefreshClaudeToken();
+        if (refreshed) return callClaude(systemPrompt, messages, model, true);
+      }
+      return "Token expirado e auto-login falhou. Execute /login no Claude Code.";
+    }
     if (err instanceof Anthropic.RateLimitError) {
       console.error("[WhatsApp] Claude API rate limited after retries");
       return "API sobrecarregada. Tente novamente em alguns segundos.";
-    }
-    if (err instanceof Anthropic.AuthenticationError) {
-      console.error("[WhatsApp] Claude API token expired or invalid");
-      return "Token expirado. Execute /login no Claude Code para renovar.";
     }
     console.error("[WhatsApp] Claude API error:", err);
     return "Erro na API. Tente novamente.";
@@ -769,6 +850,8 @@ WHEN ADVANCING TASK STATUS:
 1. If user doesn't specify which task, use list_tasks to show them and ask which one
 2. Map the user's language to the correct English status name
 3. Use advance_status with the task ID and English status
+4. If the user confirms with "certo", "ok", "sim", "vai", "pode ser", "faz isso" — that means execute the action NOW. Output the JSON immediately.
+5. NEVER just describe what you will do without outputting the JSON action. Description + JSON action must go together.
 
 REVIEW ACTIONS (when user wants to approve, reject, or check task status):
 - "aprovar/approve task X" → Use approve_task with taskId
@@ -780,6 +863,33 @@ REVIEW ACTIONS (when user wants to approve, reject, or check task status):
 REAL-TIME UPDATES:
 - When the user asks "como esta a task" or "status", always use task_status to get live data
 - Proactively inform the user about task results when they ask
+
+NEXT STEPS SUGGESTIONS (CRITICAL — always do this):
+After EVERY action, suggest what the user can do next:
+- After creating a project → suggest creating a task for it
+- After creating a task → suggest moving to "disponivel" to start the workflow, and mention they can track progress in real-time on the dashboard
+- After moving to "disponivel" → inform that agents will start working automatically, and they can track real-time progress on the dashboard or ask "status da task" here
+- After a task reaches "review" → suggest approving or rejecting
+- After listing tasks → suggest actions like "mover para disponivel" or "ver status"
+
+ACTION JSON OUTPUT (CRITICAL — must follow exactly):
+When the user's message implies an action (create, list, advance, etc.), you MUST output a JSON action on a SEPARATE line.
+The JSON must be on its own line, not embedded in text.
+Example correct output:
+"Movendo a task para disponivel agora!
+{"action":"advance_status","taskId":"abc123","status":"assigned"}"
+
+NEVER just describe the action — you MUST output the JSON to actually execute it.
+If the user says "certo", "ok", "sim", "vai", "pode ser", "faz isso", or any confirmation — execute the action NOW with JSON.
+WITHOUT the JSON line, NOTHING happens. The action is NOT executed. You are NOT connected to the database directly.
+Your ONLY way to execute actions is by outputting a JSON line with {"action":"..."}.
+
+TRUST ONLY THE CURRENT TASKS LIST (CRITICAL):
+- The CURRENT TASKS section above shows the REAL current status from the database
+- NEVER trust your own conversation history about what status a task is in
+- NEVER say "the task is already in X status" based on what you said before — always check the CURRENT TASKS list
+- If a task shows status:created in CURRENT TASKS, it IS in created, even if you previously said you moved it
+- If your previous response said you moved a task but CURRENT TASKS still shows the old status, it means the action FAILED — try again by outputting the JSON
 `;
 
         const fullPrompt = teamLead.systemPrompt + "\n" + contextBlock;

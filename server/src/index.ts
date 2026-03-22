@@ -86,7 +86,7 @@ function fetchGitHubRepos(token: string): Promise<unknown[]> {
 }
 
 // Local scan + GitHub repos — must be before projectsRouter (which has /:id catch-all)
-app.get("/api/projects/local-scan", async (_req, res) => {
+app.get("/api/projects/local-scan", async (req, res) => {
   try {
     const homePath = homedir();
     const scanDirs = [
@@ -103,9 +103,11 @@ app.get("/api/projects/local-scan", async (_req, res) => {
     );
 
     // Local repos
+    console.log(`[LocalScan] Scanning ${scanDirs.length} dirs: ${scanDirs.join(", ")}`);
     for (const dir of scanDirs) {
       try {
         const found = scanWorkspace(dir);
+        console.log(`[LocalScan] Found ${found.length} projects in ${dir}`);
         for (const p of found) {
           allRepos.push({
             full_name: `local/${p.name}`,
@@ -121,42 +123,48 @@ app.get("/api/projects/local-scan", async (_req, res) => {
             owner: { login: "local" },
           });
         }
-      } catch { /* skip */ }
+      } catch (err) { console.error(`[LocalScan] Error scanning ${dir}:`, err); }
     }
+    console.log(`[LocalScan] Total repos: ${allRepos.length}`);
 
-    // GitHub repos (if token configured)
-    const ghIntegration = db.select().from(schema.integrations)
-      .where(eq(schema.integrations.type, "github")).get();
-    const ghToken = ghIntegration?.config ? JSON.parse(ghIntegration.config).token : null;
+    // GitHub repos only if explicitly requested via ?includeGithub=true
+    const includeGithub = req.query.includeGithub === "true";
+    if (includeGithub) {
+      const ghIntegration = db.select().from(schema.integrations)
+        .where(eq(schema.integrations.type, "github")).get();
+      const ghToken = ghIntegration?.config ? JSON.parse(ghIntegration.config).token : null;
 
-    if (ghToken) {
-      const ghRepos = await fetchGitHubRepos(ghToken) as Array<{
-        full_name: string; name: string; description: string | null;
-        html_url: string; clone_url: string; private: boolean;
-        language: string | null; updated_at: string; stargazers_count: number;
-        owner: { login: string };
-      }>;
+      if (ghToken) {
+        const ghRepos = await fetchGitHubRepos(ghToken) as Array<{
+          full_name: string; name: string; description: string | null;
+          html_url: string; clone_url: string; private: boolean;
+          language: string | null; updated_at: string; stargazers_count: number;
+          owner: { login: string };
+        }>;
 
-      for (const r of ghRepos) {
-        allRepos.push({
-          id: r.full_name,
-          full_name: r.full_name,
-          name: r.name,
-          description: r.description,
-          html_url: r.html_url,
-          clone_url: r.clone_url,
-          private: r.private,
-          language: r.language,
-          updated_at: r.updated_at,
-          stargazers_count: r.stargazers_count,
-          owner: r.owner,
-          alreadyImported: existingUrls.has(r.html_url),
-        });
+        for (const r of ghRepos) {
+          allRepos.push({
+            id: r.full_name,
+            full_name: r.full_name,
+            name: r.name,
+            description: r.description,
+            html_url: r.html_url,
+            clone_url: r.clone_url,
+            private: r.private,
+            language: r.language,
+            updated_at: r.updated_at,
+            stargazers_count: r.stargazers_count,
+            owner: r.owner,
+            alreadyImported: existingUrls.has(r.html_url),
+          });
+        }
       }
     }
 
+    console.log(`[LocalScan] Returning ${allRepos.length} repos`);
     res.json({ repos: allRepos });
-  } catch {
+  } catch (err) {
+    console.error("[LocalScan] Outer catch:", err);
     res.json({ repos: [] });
   }
 });
@@ -461,24 +469,42 @@ app.post("/api/tasks/:id/execute", async (req, res) => {
   });
 });
 
-// Agent activity endpoint — returns currently running agents (persists across page refresh)
+// Agent activity endpoint — returns full execution state (persists across page refresh)
 app.get("/api/agents/activity", (_req, res) => {
+  const { getFullActivityState } = require("./lib/execution-state.js") as typeof import("./lib/execution-state.js");
+  const state = getFullActivityState();
+
+  // Build legacy-compatible activity format + enhanced data
+  const activity: Record<string, { status: string; taskId: string; taskTitle: string; progress: number; currentFile?: string; currentTool?: string; agentRole?: string }> = {};
+  for (const [agentId, agentState] of Object.entries(state.agents)) {
+    activity[agentId] = {
+      status: agentState.status,
+      taskId: agentState.taskId,
+      taskTitle: agentState.taskTitle,
+      progress: agentState.progress,
+      currentFile: agentState.currentFile,
+      currentTool: agentState.currentTool,
+      agentRole: agentState.agentRole,
+    };
+  }
+
+  // Fallback: also check DB for in_progress tasks not in memory (e.g. server restarted mid-execution)
   const runningTasks = db.select().from(schema.tasks)
     .where(eq(schema.tasks.status, "in_progress")).all();
-
-  const activity: Record<string, { status: string; taskId: string; taskTitle: string; progress: number }> = {};
   for (const task of runningTasks) {
-    if (task.assignedAgentId) {
+    if (task.assignedAgentId && !activity[task.assignedAgentId]) {
+      const agent = db.select().from(schema.agents).where(eq(schema.agents.id, task.assignedAgentId)).get();
       activity[task.assignedAgentId] = {
         status: "running",
         taskId: task.id,
         taskTitle: task.title,
         progress: 50,
+        agentRole: agent?.role,
       };
     }
   }
 
-  res.json({ activity });
+  res.json({ activity, v2Tasks: state.v2Tasks });
 });
 
 // API routes
@@ -860,6 +886,38 @@ app.get("/api/messages", (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Execution Mode — v1 (workflow) or v2 (agent teams)
+// ---------------------------------------------------------------------------
+
+app.get("/api/execution-mode", (_req, res) => {
+  const row = db.select().from(schema.integrations)
+    .where(eq(schema.integrations.type, "execution_mode")).get();
+  res.json({ mode: row?.config ?? "v1" });
+});
+
+app.put("/api/execution-mode", (req, res) => {
+  const { mode } = req.body as { mode: string };
+  if (!mode || !["v1", "v2"].includes(mode)) {
+    return res.status(400).json({ error: "mode must be 'v1' or 'v2'" });
+  }
+
+  const existing = db.select().from(schema.integrations)
+    .where(eq(schema.integrations.type, "execution_mode")).get();
+
+  if (existing) {
+    db.update(schema.integrations).set({ config: mode, updatedAt: Date.now() })
+      .where(eq(schema.integrations.id, existing.id)).run();
+  } else {
+    db.insert(schema.integrations).values({
+      id: nanoid(), type: "execution_mode", status: "connected",
+      config: mode, createdAt: Date.now(), updatedAt: Date.now(),
+    }).run();
+  }
+
+  res.json({ mode });
+});
+
+// ---------------------------------------------------------------------------
 // Workflows — persisted in ~/.agenthub-local/workflow.json
 // ---------------------------------------------------------------------------
 
@@ -1041,6 +1099,33 @@ Types:
 });
 
 // Agent memories CRUD
+// Task execution logs (persisted files)
+app.get("/api/tasks/:id/execution-log", (req, res) => {
+  const { getTaskLogPath } = require("./lib/task-logger.js") as typeof import("./lib/task-logger.js");
+  const logPath = getTaskLogPath(req.params.id);
+  try {
+    if (existsSync(logPath)) {
+      const content = readFileSync(logPath, "utf-8");
+      res.json({ log: content });
+    } else {
+      res.json({ log: "" });
+    }
+  } catch {
+    res.json({ log: "" });
+  }
+});
+
+// All team insights (global memories)
+app.get("/api/memories", (_req, res) => {
+  const memories = db.select().from(schema.agentMemories).all();
+  // Enrich with agent name
+  const enriched = memories.map((m) => {
+    const agent = m.agentId ? db.select().from(schema.agents).where(eq(schema.agents.id, m.agentId)).get() : null;
+    return { ...m, agentName: agent?.name ?? "System", agentRole: agent?.role ?? "system" };
+  });
+  res.json({ memories: enriched });
+});
+
 app.get("/api/agents/:id/memories", (req, res) => {
   const memories = db.select().from(schema.agentMemories)
     .where(eq(schema.agentMemories.agentId, req.params.id)).all();

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useTranslation } from "react-i18next";
-import { Settings, Users, CheckCircle2, ListTodo, Zap, Play, Kanban } from "lucide-react";
+import { Settings, Users, CheckCircle2, ListTodo, Zap, Play, Kanban, Code2 } from "lucide-react";
 import { AgentAvatar } from "../components/agents/agent-avatar";
 import { useWorkspaceStore } from "../stores/workspace-store";
 import { useSocket } from "../hooks/use-socket";
@@ -66,6 +66,13 @@ export function ProjectOverview() {
   const projectAgents = agents.filter((a) => a.role !== "receptionist");
   const activeAgents = projectAgents.filter((a) => a.isActive);
 
+  // Parse stack safely (may be string JSON or already array)
+  const stackArr: string[] = (() => {
+    if (!project.stack) return [];
+    if (Array.isArray(project.stack)) return project.stack;
+    try { const parsed = JSON.parse(project.stack as unknown as string); return Array.isArray(parsed) ? parsed : []; } catch { return []; }
+  })();
+
   const recentTasks = [...tasks]
     .sort((a, b) => new Date(b.updatedAt ?? b.createdAt).getTime() - new Date(a.updatedAt ?? a.createdAt).getTime())
     .slice(0, 10);
@@ -106,9 +113,18 @@ export function ProjectOverview() {
           </div>
         }
       >
-        {project.description && (
-          <span className="text-[13px] text-neutral-fg2 truncate">{project.description}</span>
-        )}
+        <div className="flex items-center gap-2 min-w-0">
+          {project.description && (
+            <span className="text-[13px] text-neutral-fg2 truncate">{project.description}</span>
+          )}
+          {stackArr.length > 0 && (
+            <div className="flex items-center gap-1 shrink-0">
+              {stackArr.map((s) => (
+                <span key={s} className="rounded-md bg-purple-light px-2 py-0.5 text-[10px] font-semibold text-purple-dark">{s}</span>
+              ))}
+            </div>
+          )}
+        </div>
       </CommandBar>
 
       {/* Content */}
@@ -130,6 +146,31 @@ export function ProjectOverview() {
             );
           })}
         </div>
+
+        {/* Project info */}
+        {(stackArr.length > 0 || project.path) && (
+          <div className="card-glow p-4 mb-6 flex flex-wrap items-center gap-4 animate-fade-up stagger-2">
+            {stackArr.length > 0 && (
+              <div className="flex items-center gap-2">
+                <Code2 className="h-4 w-4 text-purple shrink-0" />
+                <span className="text-[11px] font-semibold text-neutral-fg3 uppercase tracking-wider mr-1">Stack</span>
+                {stackArr.map((s) => (
+                  <span key={s} className="rounded-md bg-purple-light px-2.5 py-1 text-[11px] font-semibold text-purple-dark">{s}</span>
+                ))}
+              </div>
+            )}
+            {project.path && (
+              <div className="flex items-center gap-2 text-neutral-fg3">
+                <span className="text-[11px] font-mono truncate max-w-[300px]">{project.path}</span>
+              </div>
+            )}
+            {project.githubUrl && (
+              <a href={project.githubUrl as string} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5 text-[11px] font-semibold text-brand hover:underline">
+                GitHub
+              </a>
+            )}
+          </div>
+        )}
 
         {/* 12-col grid content */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 lg:gap-10">

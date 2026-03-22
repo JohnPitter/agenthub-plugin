@@ -60,12 +60,10 @@ export function ActiveAgentBar() {
         />
         <div>
           <p className="text-[13px] font-semibold text-neutral-fg1">{runningAgent.name}</p>
-          <p className="text-[11px] text-neutral-fg3">
+          <p className="text-[11px] text-neutral-fg3 truncate max-w-[180px]">
             {activity?.currentTask
               ? activity.currentTask.slice(0, 50)
-              : activeProject
-                ? activeProject.name
-                : t("agents.noProject")}
+              : t("agentStatus.running")}
           </p>
         </div>
       </div>

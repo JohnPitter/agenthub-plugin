@@ -6,6 +6,8 @@ import { join } from "path";
 import { homedir } from "os";
 import { db, schema } from "../db.js";
 import { eq } from "drizzle-orm";
+import { updateAgentState, clearAgentState } from "./execution-state.js";
+import { taskLog, taskError } from "./task-logger.js";
 
 // ---------------------------------------------------------------------------
 // Workflow types (mirrors shared AgentWorkflow)
@@ -31,11 +33,20 @@ const WORKFLOW_FILE = join(homedir(), ".agenthub-local", "workflow.json");
 
 function readWorkflows(): WorkflowData[] {
   try {
-    if (!existsSync(WORKFLOW_FILE)) return [];
+    if (!existsSync(WORKFLOW_FILE)) {
+      console.log("[TaskExecutor] No workflow file found at", WORKFLOW_FILE);
+      return [];
+    }
     const raw = readFileSync(WORKFLOW_FILE, "utf-8");
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
+    if (!Array.isArray(parsed)) {
+      console.warn("[TaskExecutor] Workflow file is not an array");
+      return [];
+    }
+    console.log(`[V1] Loaded ${parsed.length} workflows`);
+    return parsed;
+  } catch (err) {
+    console.error("[TaskExecutor] Failed to read workflow file:", err);
     return [];
   }
 }
@@ -47,9 +58,25 @@ function getDefaultWorkflow(): WorkflowData | null {
   return workflows.find((w) => w.isDefault) ?? workflows[0];
 }
 
-/** Find the workflow step for a given agentId */
+/** Find the workflow step for a given agentId (also tries matching by agent role) */
 function findStepByAgentId(workflow: WorkflowData, agentId: string): WorkflowStepData | null {
-  return workflow.steps.find((s) => s.agentId === agentId) ?? null;
+  // Direct match by ID
+  const direct = workflow.steps.find((s) => s.agentId === agentId);
+  if (direct) return direct;
+
+  // Fallback: match by agent role (in case workflow has stale/placeholder IDs)
+  const agent = db.select().from(schema.agents).where(eq(schema.agents.id, agentId)).get();
+  if (agent) {
+    const byRole = workflow.steps.find((s) => {
+      const stepAgent = db.select().from(schema.agents).where(eq(schema.agents.id, s.agentId)).get();
+      return stepAgent?.role === agent.role;
+    });
+    if (byRole) {
+      console.log(`[V1] Matched step by role: ${agent.role} (step agentId=${byRole.agentId} vs queried agentId=${agentId})`);
+      return byRole;
+    }
+  }
+  return null;
 }
 
 /** Get the next agent step in the workflow chain */
@@ -89,28 +116,65 @@ export async function executeTask(taskId: string, io: ExecutionIO): Promise<void
       .set({ assignedAgentId: agentId, updatedAt: Date.now() })
       .where(eq(schema.tasks.id, taskId))
       .run();
+    io.emit("task:updated", { task: db.select().from(schema.tasks).where(eq(schema.tasks.id, taskId)).get() });
   }
 
   const agent = db.select().from(schema.agents).where(eq(schema.agents.id, agentId)).get();
   if (!agent || !agent.isActive) throw new Error("Agent not active");
 
-  // Build enriched system prompt with soul + memories
-  const memories = db.select().from(schema.agentMemories)
-    .where(eq(schema.agentMemories.agentId, agentId)).all();
+  // Build enriched system prompt with soul + shared memories (all agents)
+  const memories = db.select().from(schema.agentMemories).all();
 
   let systemPrompt = agent.systemPrompt;
   if (agent.soul) systemPrompt += `\n\n${agent.soul}`;
   if (memories.length > 0) {
-    const memLines = memories.map(m => `- [${m.type}] ${m.content}`).join("\n");
-    systemPrompt += `\n\n## Your Memories\n${memLines}`;
+    const memLines = memories.slice(-30).map(m => {
+      const author = m.agentId ? (db.select().from(schema.agents).where(eq(schema.agents.id, m.agentId)).get()?.name ?? "unknown") : "system";
+      return `- [${m.type}] (by ${author}) ${m.content}`;
+    }).join("\n");
+    systemPrompt += `\n\n## Team Insights (shared memories from all agents)\n${memLines}`;
   }
+
+  // Parse project stack
+  let stackArr: string[] = [];
+  try { stackArr = project.stack ? JSON.parse(project.stack) : []; } catch { /* ignore */ }
+  const stackLabel = stackArr.length > 0 ? stackArr.join(", ") : "not specified";
 
   systemPrompt += `\n\n## Current Task
 - Title: ${task.title}
 - Description: ${task.description || "N/A"}
 - Priority: ${task.priority}
 - Category: ${task.category}
-- Project: ${project.name} (${project.path})`;
+- Project: ${project.name} (${project.path})
+- Stack/Technologies: ${stackLabel}`;
+
+  if (stackArr.length > 0) {
+    systemPrompt += `\n\n## IMPORTANT: Technology Stack
+This project uses: ${stackLabel}.
+- You MUST use these technologies when implementing. Do NOT use different frameworks.
+- If the project directory is empty or has only a basic package.json, initialize it properly with the correct stack.
+- All code, dependencies, and configuration must be consistent with the specified stack.`;
+  }
+
+  // If task was previously executed (retry/rejection), include previous result and logs
+  if (task.result) {
+    const prevLogs = db.select().from(schema.taskLogs)
+      .where(eq(schema.taskLogs.taskId, taskId)).all()
+      .slice(-10)
+      .map(l => `[${l.action}] ${l.detail}`).join("\n");
+    systemPrompt += `\n\n## PREVIOUS EXECUTION (this task was rejected or failed — DO NOT start from scratch)
+Previous result:
+${task.result.slice(0, 3000)}
+
+Previous execution logs:
+${prevLogs}
+
+IMPORTANT: The project directory already contains work from the previous attempt.
+- Read the existing files first to understand what was already done
+- Fix the issues that caused rejection/failure — do NOT rewrite everything
+- Build on top of existing work, only modify what needs to change
+- If QA rejected with specific feedback, address those points`;
+  }
 
   // Map agent's allowed tools to SDK tool names
   const allowedTools: string[] = agent.allowedTools ? JSON.parse(agent.allowedTools) : [];
@@ -143,7 +207,7 @@ export async function executeTask(taskId: string, io: ExecutionIO): Promise<void
       }
       db.update(schema.tasks).set({ branch: branchName, updatedAt: Date.now() }).where(eq(schema.tasks.id, taskId)).run();
     } catch (err) {
-      console.error(`[TaskExecutor] Branch creation failed: ${err}`);
+      taskError(taskId, "V1", `Branch creation failed: ${err}`);
       // Fall back to working on current branch
     }
   } else {
@@ -159,7 +223,7 @@ export async function executeTask(taskId: string, io: ExecutionIO): Promise<void
       });
       workDir = tmpDir;
     } catch (err) {
-      console.error(`[TaskExecutor] Temp copy failed: ${err}`);
+      taskError(taskId, "V1", `Temp copy failed: ${err}`);
       // Fall back to original directory
     }
   }
@@ -180,6 +244,7 @@ export async function executeTask(taskId: string, io: ExecutionIO): Promise<void
   io.emit("task:status", { taskId, status: "in_progress", agentId });
   io.emit("agent:status", { agentId, status: "running", taskId, progress: 0 });
   io.emit("board:activity", { agentId, action: "status:running", detail: `${agent.name} started: ${task.title}` });
+  updateAgentState(agentId, { agentId, agentRole: agent.role, agentName: agent.name, status: "running", taskId, taskTitle: task.title, progress: 0, currentFile: "", currentTool: "" });
 
   db.insert(schema.taskLogs).values({
     id: nanoid(), taskId, agentId, action: "status_change",
@@ -227,6 +292,8 @@ export async function executeTask(taskId: string, io: ExecutionIO): Promise<void
     resultText = err instanceof Error ? err.message : "Execution failed";
     finalStatus = "failed";
     io.emit("agent:status", { agentId, status: "error", taskId });
+    updateAgentState(agentId, { status: "error" });
+    clearAgentState(agentId);
   }
 
   // Update task with result
@@ -241,8 +308,12 @@ export async function executeTask(taskId: string, io: ExecutionIO): Promise<void
   io.emit("task:status", { taskId, status: finalStatus, agentId });
   io.emit("task:updated", { task: db.select().from(schema.tasks).where(eq(schema.tasks.id, taskId)).get() });
   io.emit("agent:status", { agentId, status: "idle", taskId });
+  clearAgentState(agentId);
   io.emit("agent:result", { agentId, taskId, result: resultText.slice(0, 500), status: finalStatus });
   io.emit("board:activity", { agentId, action: `task:${finalStatus}`, detail: `${task.title} → ${finalStatus}` });
+
+  // Extract and save agent learnings
+  try { extractAndSaveMemories(agentId, taskId, resultText); } catch { /* non-critical */ }
 
   db.insert(schema.taskLogs).values({
     id: nanoid(), taskId, agentId, action: "status_change",
@@ -258,19 +329,36 @@ export async function executeTask(taskId: string, io: ExecutionIO): Promise<void
         execFileSync("git", ["add", "-A"], { cwd: project.path, timeout: 5000 });
         execFileSync("git", ["commit", "-m", `task: ${task.title}`], { cwd: project.path, timeout: 10000 });
       } catch { /* nothing to commit */ }
-      // Switch back to original branch
+      // Merge task branch into original branch so changes are visible
       execFileSync("git", ["checkout", originalBranch], { cwd: project.path, timeout: 5000 });
+      try {
+        execFileSync("git", ["merge", "--no-ff", branchName, "-m", `Merge task: ${task.title}`], { cwd: project.path, timeout: 10000 });
+        taskLog(taskId, "V1", `Merged ${branchName} into ${originalBranch}`);
+      } catch (err) {
+        taskError(taskId, "V1", `Merge into ${originalBranch} failed (changes remain on ${branchName}): ${err}`);
+      }
       // Restore stashed work
       try { execFileSync("git", ["stash", "pop"], { cwd: project.path, timeout: 5000 }); } catch { /* no stash */ }
     } catch (err) {
-      console.error(`[TaskExecutor] Branch cleanup failed: ${err}`);
+      taskError(taskId, "V1", `Branch cleanup failed: ${err}`);
     }
   } else if (tmpDir && existsSync(tmpDir)) {
-    // For non-git projects, keep the tmp dir as the task workspace
-    // Log the location for reference
+    // For non-git projects, copy results back to the original project directory
+    try {
+      cpSync(tmpDir, project.path, {
+        recursive: true,
+        force: true,
+        filter: (src: string) => !src.includes("node_modules") && !src.includes(".git"),
+      });
+      taskLog(taskId, "V1", `Copied task results from ${tmpDir} back to ${project.path}`);
+    } catch (err) {
+      taskError(taskId, "V1", `Failed to copy results back: ${err}`);
+    }
+    // Clean up tmp dir after copy
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
     db.insert(schema.taskLogs).values({
       id: nanoid(), taskId, agentId, action: "workspace",
-      detail: `Task workspace: ${tmpDir}`, createdAt: Date.now(),
+      detail: `Task results copied to ${project.path}`, createdAt: Date.now(),
     }).run();
   }
 
@@ -278,12 +366,15 @@ export async function executeTask(taskId: string, io: ExecutionIO): Promise<void
   if (finalStatus === "review") {
     try {
       const workflow = getDefaultWorkflow();
+      taskLog(taskId, "V1", `Workflow chaining check: workflow=${workflow ? workflow.name : "null"}, currentAgent=${agentId}`);
       if (workflow) {
+        const currentStep = findStepByAgentId(workflow, agentId);
+        taskLog(taskId, "V1", `Current step: ${currentStep ? `${currentStep.id} (nextSteps: ${currentStep.nextSteps.join(",")||"none"})` : "NOT FOUND in workflow"}`);
         const nextStep = getNextStep(workflow, agentId);
         if (nextStep && nextStep.agentId) {
           const nextAgent = db.select().from(schema.agents).where(eq(schema.agents.id, nextStep.agentId)).get();
           if (nextAgent && nextAgent.isActive) {
-            console.log(`[TaskExecutor] Workflow chain: ${agent.name} → ${nextAgent.name} for task ${taskId}`);
+            taskLog(taskId, "V1", `Workflow chain: ${agent.name} → ${nextAgent.name} for task ${taskId}`);
 
             db.insert(schema.taskLogs).values({
               id: nanoid(), taskId, agentId: nextAgent.id, action: "workflow_chain",
@@ -312,7 +403,7 @@ export async function executeTask(taskId: string, io: ExecutionIO): Promise<void
         }
       }
     } catch (err) {
-      console.error(`[TaskExecutor] Workflow chain failed: ${err}`);
+      taskError(taskId, "V1", `Workflow chain failed: ${err}`);
       // Graceful degradation — task stays at "review" for manual handling
     }
   }
@@ -329,19 +420,21 @@ async function executeWorkflowQaStep(
   project: { id: string; name: string; path: string },
   devResult: string,
   io: ExecutionIO,
-  workflow: WorkflowData,
+  _workflow: WorkflowData,
 ): Promise<void> {
   const qaAgentId = qaAgent.id;
 
-  // Build QA system prompt
-  const qaMemories = db.select().from(schema.agentMemories)
-    .where(eq(schema.agentMemories.agentId, qaAgentId)).all();
+  // Build QA system prompt with shared memories
+  const qaMemories = db.select().from(schema.agentMemories).all();
 
   let qaSystemPrompt = qaAgent.systemPrompt;
   if (qaAgent.soul) qaSystemPrompt += `\n\n${qaAgent.soul}`;
   if (qaMemories.length > 0) {
-    const memLines = qaMemories.map(m => `- [${m.type}] ${m.content}`).join("\n");
-    qaSystemPrompt += `\n\n## Your Memories\n${memLines}`;
+    const memLines = qaMemories.slice(-30).map(m => {
+      const author = m.agentId ? (db.select().from(schema.agents).where(eq(schema.agents.id, m.agentId)).get()?.name ?? "unknown") : "system";
+      return `- [${m.type}] (by ${author}) ${m.content}`;
+    }).join("\n");
+    qaSystemPrompt += `\n\n## Team Insights (shared memories from all agents)\n${memLines}`;
   }
 
   qaSystemPrompt += `\n\n## QA Review Task
@@ -369,6 +462,7 @@ Review the developer's work. Check for correctness, code quality, and completene
   io.emit("task:status", { taskId, status: "in_progress", agentId: qaAgentId });
   io.emit("agent:status", { agentId: qaAgentId, status: "running", taskId, progress: 0 });
   io.emit("board:activity", { agentId: qaAgentId, action: "status:running", detail: `${qaAgent.name} reviewing: ${task.title}` });
+  updateAgentState(qaAgentId, { agentId: qaAgentId, agentRole: "qa", agentName: qaAgent.name, status: "running", taskId, taskTitle: task.title, progress: 0, currentFile: "", currentTool: "review" });
 
   db.insert(schema.taskLogs).values({
     id: nanoid(), taskId, agentId: qaAgentId, action: "status_change",
@@ -461,6 +555,7 @@ Review the developer's work. Check for correctness, code quality, and completene
   io.emit("task:status", { taskId, status: qaStatus, agentId: qaAgentId });
   io.emit("task:updated", { task: db.select().from(schema.tasks).where(eq(schema.tasks.id, taskId)).get() });
   io.emit("agent:status", { agentId: qaAgentId, status: "idle", taskId });
+  clearAgentState(qaAgentId);
   io.emit("agent:result", { agentId: qaAgentId, taskId, result: qaResultText.slice(0, 500), status: qaStatus });
   io.emit("board:activity", { agentId: qaAgentId, action: `task:${qaStatus}`, detail: `${task.title} → QA ${qaStatus === "done" ? "approved" : qaStatus === "assigned" ? "rejected" : "failed"}` });
 
@@ -472,7 +567,7 @@ Review the developer's work. Check for correctness, code quality, and completene
 
   // If QA rejected, re-trigger dev agent execution
   if (qaStatus === "assigned" && originalDevAgentId) {
-    console.log(`[TaskExecutor] QA rejected — re-assigning to dev agent for task ${taskId}`);
+    taskLog(taskId, "V1", `QA rejected — re-assigning to dev agent for task ${taskId}`);
     db.insert(schema.taskLogs).values({
       id: nanoid(), taskId, agentId: originalDevAgentId, action: "workflow_chain",
       detail: `QA rejected → re-assigned to dev agent`,
@@ -500,8 +595,61 @@ function buildPrompt(
     "",
     `Project directory: ${project.path}`,
     "",
+    "IMPORTANT STRUCTURAL RULES:",
+    "- If the task requires BOTH frontend and backend, use a monorepo structure:",
+    "  apps/web/ for frontend, apps/server/ for backend, packages/shared/ for shared types",
+    "- Initialize with proper tooling (package.json with workspaces, tsconfig references)",
+    "- If the project already has a structure, follow it — do NOT reorganize",
+    "",
     "Use the available tools to complete the task. When done, summarize what you did.",
+    "",
+    "At the END of your response, include a MEMORY section with insights you discovered during this task.",
+    "These insights are shared with ALL agents on the team — write things that would help others.",
+    "Format exactly like this (one per line):",
+    "",
+    "MEMORY_START",
+    "[insight] This project uses PostgreSQL with Prisma ORM, connection string in .env",
+    "[discovery] The auth system uses JWT stored in httpOnly cookies, not localStorage",
+    "[warning] The /api/users endpoint has no rate limiting — needs fixing",
+    "[pattern] All React components follow: feature-name/index.tsx + feature-name.styles.ts",
+    "[dependency] Project depends on sharp for image processing — requires native build",
+    "MEMORY_END",
+    "",
+    "Focus on project-specific insights: architecture decisions, hidden dependencies,",
+    "non-obvious configurations, gotchas, patterns. Skip generic programming knowledge.",
   ].join("\n");
+}
+
+/** Extract learnings from agent result and save to agentMemories table */
+function extractAndSaveMemories(agentId: string, taskId: string, resultText: string): void {
+  const match = resultText.match(/MEMORY_START\n([\s\S]*?)MEMORY_END/);
+  if (!match) return;
+
+  const lines = match[1].trim().split("\n").filter((l) => l.trim().startsWith("["));
+  for (const line of lines) {
+    const typeMatch = line.match(/^\[(\w+)\]\s*(.+)/);
+    if (!typeMatch) continue;
+
+    const type = typeMatch[1]; // learning, correction, pattern, context
+    const content = typeMatch[2].trim();
+    if (!content || content.length < 10) continue;
+
+    // Avoid duplicates
+    const existing = db.select().from(schema.agentMemories)
+      .where(eq(schema.agentMemories.agentId, agentId)).all();
+    if (existing.some((m) => m.content === content)) continue;
+
+    db.insert(schema.agentMemories).values({
+      id: nanoid(),
+      agentId,
+      taskId,
+      type,
+      content,
+      source: "auto",
+      createdAt: Date.now(),
+    }).run();
+    taskLog(taskId, "V1", `Saved memory for agent ${agentId}: [${type}] ${content.slice(0, 60)}`);
+  }
 }
 
 function handleMessage(

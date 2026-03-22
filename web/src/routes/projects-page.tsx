@@ -74,8 +74,8 @@ export function ProjectsPage() {
     setLoadingRepos(true);
     setRepoError(false);
     setRepoNeedsReauth(false);
-    api<{ repos: EnrichedRepo[] }>("/projects/local-scan")
-      .then(({ repos }) => setGithubRepos(repos))
+    api<{ repos: EnrichedRepo[] }>("/projects/local-scan?includeGithub=true")
+      .then(({ repos }) => setGithubRepos(repos.filter((r) => r.owner?.login !== "local")))
       .catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : "";
         if (msg === "github_reauth") {

@@ -15,13 +15,13 @@
 - Responds in Portuguese (pt-BR)
 - Prefers direct fixes over explanations
 - Wants features to work in both standalone server AND plugin mode
-- Frontend source is NOT in this repo — only compiled dist assets
-- Edits to minified JS are acceptable and expected
+- Frontend source is in `web/` directory (React + Vite)
 - Commits should include all changes, push immediately when asked
 - `python` not `python3` on Windows
 - Uses agent teams for parallel work — dispatch subagents for independent files
 - Prefers Claude Agent SDK over raw API calls for task execution
 - Prefers Anthropic SDK over raw https for simple API calls (auto retry)
+- **NON-NEGOTIABLE: All real-time data must survive page refresh (normal AND hard).** Never rely on sessionStorage alone — persist execution state server-side and fetch on page load. Socket events are for live updates, not initial state.
 
 ## Patterns That Work
 - Edit minified JS by finding unique string anchors (e.g. specific className + text)

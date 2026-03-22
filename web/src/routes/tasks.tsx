@@ -3,10 +3,11 @@ import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 import {
   FolderOpen, Play, Clock, GitBranch,
-  CheckCircle2, AlertTriangle, Zap, Terminal, FileCode,
+  CheckCircle2, AlertTriangle, Zap, Terminal, FileCode, ChevronDown,
   ArrowRightLeft, Eye, User, GripVertical, X, Tag,
   Calendar, Hash, DollarSign, Coins, Plus, FileDiff,
   LayoutGrid, Building2, RotateCcw, Send, Loader2, XCircle,
+  MessageSquare,
 } from "lucide-react";
 import { CommandBar } from "../components/layout/command-bar";
 import { PixelOffice } from "../components/pixel-office/pixel-office";
@@ -71,12 +72,16 @@ export function TasksPage() {
   const { t } = useTranslation();
   const projects = useWorkspaceStore((s) => s.projects);
   const agents = useWorkspaceStore((s) => s.agents);
+  const setProjects = useWorkspaceStore((s) => s.setProjects);
+  const setAgents = useWorkspaceStore((s) => s.setAgents);
   const agentActivity = useChatStore((s) => s.agentActivity);
   const updateAgentActivity = useChatStore((s) => s.updateAgentActivity);
   const addToast = useNotificationStore((s) => s.addToast);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
   const [dragOverColumn, setDragOverColumn] = useState<TaskStatus | null>(null);
+  // Track recently moved tasks for animation (taskId → timestamp)
+  const [recentlyMoved, setRecentlyMoved] = useState<Map<string, number>>(new Map());
   const [projectFilter, setProjectFilter] = useState("");
   const [activityLog, setActivityLog] = useState<ActivityEntry[]>([]);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
@@ -84,6 +89,30 @@ export function TasksPage() {
   const [changesTaskId, setChangesTaskId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<"kanban" | "office">("kanban");
   const activityEndRef = useRef<HTMLDivElement>(null);
+
+  // V2 Agent Teams progress tracking
+  type V2ProgressEntry = {
+    complexity: string;
+    plan: string;
+    phases: { agents: string[]; parallel: boolean; status: "pending" | "running" | "done" }[];
+    agentProgress: Map<string, { progress: number; status: string; currentFile: string }>;
+  };
+  const [v2Progress, setV2Progress] = useState<Map<string, V2ProgressEntry>>(new Map());
+
+  /* ─── Ensure projects and agents are loaded ─── */
+  useEffect(() => {
+    if (projects.length === 0) {
+      api<{ projects: { id: string; name: string }[] }>("/projects")
+        .then((d) => setProjects(d.projects as never[]))
+        .catch(() => {});
+    }
+    if (agents.length === 0) {
+      api<{ agents: Agent[] }>("/agents")
+        .then((d) => setAgents(d.agents))
+        .catch(() => {});
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   /* ─── Data fetch ─── */
   const fetchTasks = useCallback(async () => {
@@ -97,17 +126,43 @@ export function TasksPage() {
 
   useEffect(() => { fetchTasks(); }, [fetchTasks]);
 
-  /* ─── Restore agent activity from server on mount ─── */
+  /* ─── Restore agent activity + v2 state from server on mount (survives refresh) ─── */
   useEffect(() => {
-    api<{ activity: Record<string, { status: string; taskId: string; taskTitle: string; progress: number }> }>("/agents/activity")
-      .then(({ activity }) => {
+    api<{
+      activity: Record<string, { status: string; taskId: string; taskTitle: string; progress: number; currentFile?: string; currentTool?: string; agentRole?: string }>;
+      v2Tasks?: Record<string, { taskId: string; complexity: string; plan: string; phases: { agents: string[]; parallel: boolean; status: "pending" | "running" | "done" }[]; agentProgress: Record<string, { progress: number; status: string; currentFile: string }> }>;
+    }>("/agents/activity")
+      .then(({ activity, v2Tasks }) => {
+        // Clear stale activity, restore from server
+        useChatStore.getState().clearAgentActivity();
         for (const [agentId, info] of Object.entries(activity)) {
           updateAgentActivity(agentId, {
             status: info.status as AgentStatusEvent["status"],
             taskId: info.taskId,
             currentTask: info.taskTitle,
             progress: info.progress,
+            currentFile: info.currentFile,
             lastActivity: Date.now(),
+          });
+        }
+
+        // Restore v2 task states
+        if (v2Tasks) {
+          setV2Progress(() => {
+            const next = new Map<string, V2ProgressEntry>();
+            for (const [taskId, state] of Object.entries(v2Tasks)) {
+              const agentProgress = new Map<string, { progress: number; status: string; currentFile: string }>();
+              for (const [role, ap] of Object.entries(state.agentProgress)) {
+                agentProgress.set(role, ap);
+              }
+              next.set(taskId, {
+                complexity: state.complexity,
+                plan: state.plan,
+                phases: state.phases,
+                agentProgress,
+              });
+            }
+            return next;
           });
         }
       })
@@ -128,20 +183,34 @@ export function TasksPage() {
     return m;
   }, [agents]);
 
-  /* ─── Real-time socket listeners ─── */
+  const pushActivity = useCallback((entry: Omit<ActivityEntry, "id" | "timestamp">) => {
+    setActivityLog((prev) => [
+      ...prev.slice(-49),
+      { ...entry, id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, timestamp: Date.now() },
+    ]);
+  }, []);
+
+  /* ─── Real-time socket listeners (using refs to avoid stale closures) ─── */
+  const handlersRef = useRef({
+    updateAgentActivity,
+    pushActivity,
+    agentMap,
+  });
+  handlersRef.current = { updateAgentActivity, pushActivity, agentMap };
+
   useEffect(() => {
     const socket = getSocket();
 
     const onAgentStatus = (data: AgentStatusEvent) => {
-      updateAgentActivity(data.agentId, {
+      handlersRef.current.updateAgentActivity(data.agentId, {
         status: data.status,
         taskId: data.taskId,
         progress: data.progress ?? 0,
         lastActivity: Date.now(),
       });
-      const agent = agentMap.get(data.agentId);
+      const agent = handlersRef.current.agentMap.get(data.agentId);
       if (agent) {
-        pushActivity({
+        handlersRef.current.pushActivity({
           agentId: data.agentId,
           action: `status:${data.status}`,
           detail: data.status === "running" ? "Iniciou execução" : data.status === "idle" ? "Ficou idle" : `Status → ${data.status}`,
@@ -153,12 +222,12 @@ export function TasksPage() {
       const tool = data.tool;
       const input = data.input as Record<string, unknown> | undefined;
       const filePath = input?.file_path ?? input?.path ?? input?.filePath ?? "";
-      updateAgentActivity(data.agentId, {
+      handlersRef.current.updateAgentActivity(data.agentId, {
         currentTask: tool,
         currentFile: typeof filePath === "string" ? filePath.split("/").pop() ?? "" : "",
         lastActivity: Date.now(),
       });
-      pushActivity({
+      handlersRef.current.pushActivity({
         agentId: data.agentId,
         action: `tool:${tool}`,
         detail: typeof filePath === "string" && filePath ? `${tool} → ${filePath.split("/").pop()}` : tool,
@@ -166,10 +235,48 @@ export function TasksPage() {
     };
 
     const onTaskStatus = (data: TaskStatusEvent) => {
-      setTasks((prev) =>
-        prev.map((t) => (t.id === data.taskId ? { ...t, status: data.status as TaskStatus } : t)),
+      const finalStatuses = ["review", "done", "failed", "cancelled"];
+      const isFinished = finalStatuses.includes(data.status);
+
+      // Check if status actually changed (for animation)
+      setTasks((prev) => {
+        const existing = prev.find((t) => t.id === data.taskId);
+        if (existing && existing.status !== data.status) {
+          // Mark as recently moved for animation
+          setRecentlyMoved((m) => {
+            const next = new Map(m);
+            next.set(data.taskId, Date.now());
+            setTimeout(() => {
+              setRecentlyMoved((mm) => { const n = new Map(mm); n.delete(data.taskId); return n; });
+            }, 600);
+            return next;
+          });
+        }
+        return prev.map((t) => (t.id === data.taskId ? { ...t, status: data.status as TaskStatus, assignedAgentId: data.agentId ?? t.assignedAgentId } : t));
+      });
+      setSelectedTask((prev) =>
+        prev && prev.id === data.taskId ? { ...prev, status: data.status as TaskStatus, assignedAgentId: data.agentId ?? prev.assignedAgentId } : prev,
       );
-      pushActivity({
+
+      // Clear execution progress when task leaves in_progress
+      if (isFinished) {
+        // Clear v2 progress for this task
+        setV2Progress((prev) => {
+          if (!prev.has(data.taskId)) return prev;
+          const next = new Map(prev);
+          next.delete(data.taskId);
+          return next;
+        });
+        // Clear agent activity for agents working on this task
+        const store = useChatStore.getState();
+        store.agentActivity.forEach((activity, agentId) => {
+          if (activity.taskId === data.taskId) {
+            handlersRef.current.updateAgentActivity(agentId, { status: "idle", progress: 0, currentTask: undefined, currentFile: undefined });
+          }
+        });
+      }
+
+      handlersRef.current.pushActivity({
         agentId: data.agentId ?? "",
         action: `task:${data.status}`,
         detail: `Task → ${data.status}`,
@@ -182,7 +289,6 @@ export function TasksPage() {
         setTasks((prev) =>
           prev.map((t) => (t.id === task.id ? { ...t, ...task } : t)),
         );
-        // Also update selected task if it's the one being updated
         setSelectedTask((prev) =>
           prev && prev.id === task.id ? { ...prev, ...task } : prev,
         );
@@ -200,36 +306,125 @@ export function TasksPage() {
     };
 
     const onBoardActivity = (data: BoardActivityEvent) => {
-      pushActivity({
+      handlersRef.current.pushActivity({
         agentId: data.agentId,
         action: data.action,
         detail: data.detail,
       });
     };
 
+    const onAgentMessage = (data: { agentId: string; taskId?: string; content: string }) => {
+      handlersRef.current.updateAgentActivity(data.agentId, {
+        currentTask: data.content.slice(0, 80),
+        lastActivity: Date.now(),
+      });
+      // Show agent messages in activity feed (truncated)
+      if (data.content && data.content.length > 10) {
+        handlersRef.current.pushActivity({
+          agentId: data.agentId,
+          action: "agent:message",
+          detail: data.content.slice(0, 100),
+        });
+      }
+    };
+
+    const onV2Triage = (data: { taskId: string; complexity: string; phases: { agents: string[]; parallel: boolean }[]; plan: string }) => {
+      setV2Progress((prev) => {
+        const next = new Map(prev);
+        next.set(data.taskId, {
+          complexity: data.complexity,
+          plan: data.plan,
+          phases: data.phases.map((p) => ({ ...p, status: "pending" as const })),
+          agentProgress: new Map(),
+        });
+        return next;
+      });
+    };
+
+    const onV2PhaseStart = (data: { taskId: string; phaseIndex: number; agents: string[]; parallel: boolean }) => {
+      setV2Progress((prev) => {
+        const next = new Map(prev);
+        const entry = next.get(data.taskId);
+        if (entry && entry.phases[data.phaseIndex]) {
+          entry.phases[data.phaseIndex].status = "running";
+          next.set(data.taskId, { ...entry });
+        }
+        return next;
+      });
+    };
+
+    const onV2AgentProgress = (data: { taskId: string; agentId: string; agentRole: string; status: string; progress: number; currentFile: string }) => {
+      setV2Progress((prev) => {
+        const next = new Map(prev);
+        const entry = next.get(data.taskId);
+        if (entry) {
+          const ap = new Map(entry.agentProgress);
+          ap.set(data.agentRole, { progress: data.progress, status: data.status, currentFile: data.currentFile });
+          next.set(data.taskId, { ...entry, agentProgress: ap });
+        }
+        return next;
+      });
+      // Also update agent activity in chat store
+      handlersRef.current.updateAgentActivity(data.agentId, {
+        status: data.status === "running" ? "running" : data.status === "done" ? "idle" : "error",
+        progress: data.progress,
+        lastActivity: Date.now(),
+      });
+    };
+
+    const onV2AgentComplete = (data: { taskId: string; agentRole: string; success: boolean }) => {
+      setV2Progress((prev) => {
+        const next = new Map(prev);
+        const entry = next.get(data.taskId);
+        if (entry) {
+          const ap = new Map(entry.agentProgress);
+          const existing = ap.get(data.agentRole);
+          ap.set(data.agentRole, { progress: 100, status: data.success ? "done" : "error", currentFile: existing?.currentFile ?? "" });
+          next.set(data.taskId, { ...entry, agentProgress: ap });
+        }
+        return next;
+      });
+    };
+
+    const onV2PhaseComplete = (data: { taskId: string; phaseIndex: number }) => {
+      setV2Progress((prev) => {
+        const next = new Map(prev);
+        const entry = next.get(data.taskId);
+        if (entry && entry.phases[data.phaseIndex]) {
+          entry.phases[data.phaseIndex].status = "done";
+          next.set(data.taskId, { ...entry });
+        }
+        return next;
+      });
+    };
+
     socket.on("agent:status", onAgentStatus);
     socket.on("agent:tool_use", onAgentToolUse);
+    socket.on("agent:message", onAgentMessage);
     socket.on("task:status", onTaskStatus);
     socket.on("task:updated", onTaskUpdated);
     socket.on("task:created", onTaskCreated);
     socket.on("board:activity", onBoardActivity);
+    socket.on("v2:triage", onV2Triage);
+    socket.on("v2:phase_start", onV2PhaseStart);
+    socket.on("v2:agent_progress", onV2AgentProgress);
+    socket.on("v2:agent_complete", onV2AgentComplete);
+    socket.on("v2:phase_complete", onV2PhaseComplete);
 
     return () => {
       socket.off("agent:status", onAgentStatus);
       socket.off("agent:tool_use", onAgentToolUse);
+      socket.off("agent:message", onAgentMessage);
       socket.off("task:status", onTaskStatus);
       socket.off("task:updated", onTaskUpdated);
       socket.off("task:created", onTaskCreated);
       socket.off("board:activity", onBoardActivity);
+      socket.off("v2:triage", onV2Triage);
+      socket.off("v2:phase_start", onV2PhaseStart);
+      socket.off("v2:agent_progress", onV2AgentProgress);
+      socket.off("v2:agent_complete", onV2AgentComplete);
+      socket.off("v2:phase_complete", onV2PhaseComplete);
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agentMap]);
-
-  const pushActivity = useCallback((entry: Omit<ActivityEntry, "id" | "timestamp">) => {
-    setActivityLog((prev) => [
-      ...prev.slice(-49),
-      { ...entry, id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, timestamp: Date.now() },
-    ]);
   }, []);
 
   // Auto-scroll activity feed
@@ -495,6 +690,8 @@ export function TasksPage() {
                               agentActivity={agentActivity}
                               onDragStart={handleDragStart}
                               onClick={setSelectedTask}
+                              v2Info={v2Progress.get(task.id)}
+                              isMoving={recentlyMoved.has(task.id)}
                             />
                           ))
                         ) : (
@@ -549,6 +746,8 @@ export function TasksPage() {
                                 agentActivity={agentActivity}
                                 onDragStart={handleDragStart}
                                 onClick={setSelectedTask}
+                                v2Info={v2Progress.get(task.id)}
+                                isMoving={recentlyMoved.has(task.id)}
                               />
                             ))
                           ) : (
@@ -633,9 +832,14 @@ export function TasksPage() {
           agentActivity={agentActivity}
           onClose={() => setSelectedTask(null)}
           onViewChanges={setChangesTaskId}
-          onRetry={(taskId, agentId) => {
-            getSocket().emit("user:execute_task", { taskId, agentId });
-            setSelectedTask(null);
+          onRetry={async (taskId) => {
+            try {
+              await api(`/tasks/${taskId}`, {
+                method: "PATCH",
+                body: JSON.stringify({ status: "assigned" }),
+              });
+              setSelectedTask(null);
+            } catch { /* error handled by toast */ }
           }}
         />
       )}
@@ -691,7 +895,7 @@ interface TaskDetailPanelProps {
   agentActivity: Map<string, { status: string; currentTask?: string; currentFile?: string; lastActivity: number; progress: number; taskId?: string }>;
   onClose: () => void;
   onViewChanges?: (taskId: string) => void;
-  onRetry?: (taskId: string, agentId: string) => void;
+  onRetry?: (taskId: string) => void;
 }
 
 function TaskDetailPanel({ task, agentMap, projectMap, agentActivity, onClose, onViewChanges, onRetry }: TaskDetailPanelProps) {
@@ -802,14 +1006,14 @@ function TaskDetailPanel({ task, agentMap, projectMap, agentActivity, onClose, o
             </button>
           )}
 
-          {/* Retry button for failed tasks */}
-          {onRetry && task.status === "failed" && task.assignedAgentId && (
+          {/* Retry button for failed/cancelled tasks */}
+          {onRetry && (task.status === "failed" || task.status === "cancelled") && (
             <button
-              onClick={() => onRetry(task.id, task.assignedAgentId!)}
-              className="flex w-full items-center justify-center gap-2 rounded-lg border border-danger/20 bg-danger-light/50 px-4 py-2.5 text-[12px] font-semibold text-danger transition-all hover:bg-danger-light hover:border-danger/40"
+              onClick={() => onRetry(task.id)}
+              className="flex w-full items-center justify-center gap-2 rounded-lg border border-warning/20 bg-warning/5 px-4 py-2.5 text-[12px] font-semibold text-warning transition-all hover:bg-warning/10 hover:border-warning/40"
             >
               <RotateCcw className="h-4 w-4" />
-              Retentar Task
+              {task.status === "failed" ? "Reexecutar Task" : "Reativar Task"}
             </button>
           )}
 
@@ -926,7 +1130,7 @@ function TaskDetailPanel({ task, agentMap, projectMap, agentActivity, onClose, o
                   <DollarSign className="h-3.5 w-3.5" />
                   <span className="text-[11px] font-medium">Cost</span>
                 </div>
-                <span className="text-[11px] font-semibold text-neutral-fg1">${task.costUsd}</span>
+                <span className="text-[11px] font-semibold text-neutral-fg1">${Number(task.costUsd).toFixed(2)}</span>
               </div>
             )}
 
@@ -960,6 +1164,24 @@ function TaskDetailPanel({ task, agentMap, projectMap, agentActivity, onClose, o
                   <span className="text-[11px] font-medium">{t("taskStatus.done")}</span>
                 </div>
                 <span className="text-[11px] font-semibold text-success">{formatDate(task.completedAt)}</span>
+              </div>
+            )}
+
+            {/* Duration */}
+            {task.completedAt && task.createdAt && (
+              <div className="flex items-center justify-between px-3.5 py-2.5">
+                <div className="flex items-center gap-1.5 text-neutral-fg3">
+                  <Clock className="h-3.5 w-3.5" />
+                  <span className="text-[11px] font-medium">{t("tasks.duration", "Duração")}</span>
+                </div>
+                <span className="text-[11px] font-semibold text-neutral-fg1">
+                  {(() => {
+                    const ms = Number(task.completedAt) - Number(task.createdAt);
+                    const mins = Math.floor(ms / 60000);
+                    const secs = Math.floor((ms % 60000) / 1000);
+                    return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+                  })()}
+                </span>
               </div>
             )}
 
@@ -1114,6 +1336,13 @@ function TaskDetailPanel({ task, agentMap, projectMap, agentActivity, onClose, o
 
 /* ═══ War Room Task Card ═══ */
 
+interface V2Info {
+  complexity: string;
+  plan: string;
+  phases: { agents: string[]; parallel: boolean; status: "pending" | "running" | "done" }[];
+  agentProgress: Map<string, { progress: number; status: string; currentFile: string }>;
+}
+
 interface WarRoomCardProps {
   task: Task;
   agentMap: Map<string, Agent>;
@@ -1121,28 +1350,17 @@ interface WarRoomCardProps {
   agentActivity: Map<string, { status: string; currentTask?: string; currentFile?: string; lastActivity: number; progress: number; taskId?: string }>;
   onDragStart: (e: React.DragEvent, task: Task) => void;
   onClick: (task: Task) => void;
+  v2Info?: V2Info;
+  isMoving?: boolean;
 }
 
-function WarRoomCard({ task, agentMap, projectMap, agentActivity, onDragStart, onClick }: WarRoomCardProps) {
+function WarRoomCard({ task, agentMap, projectMap, agentActivity, onDragStart, onClick, v2Info, isMoving }: WarRoomCardProps) {
   const { t } = useTranslation();
   const priority = PRIORITY_STYLES[task.priority] ?? PRIORITY_STYLES.medium;
   const agent = task.assignedAgentId ? agentMap.get(task.assignedAgentId) : null;
   const activity = task.assignedAgentId ? agentActivity.get(task.assignedAgentId) : null;
   const isAgentWorking = activity && activity.status !== "idle" && activity.taskId === task.id;
   const projectName = projectMap.get(task.projectId);
-
-  // Track status changes for move animation
-  const prevStatusRef = useRef(task.status);
-  const [animateMove, setAnimateMove] = useState(false);
-
-  useEffect(() => {
-    if (prevStatusRef.current !== task.status) {
-      prevStatusRef.current = task.status;
-      setAnimateMove(true);
-      const timer = setTimeout(() => setAnimateMove(false), 400);
-      return () => clearTimeout(timer);
-    }
-  }, [task.status]);
 
   return (
     <div
@@ -1154,7 +1372,7 @@ function WarRoomCard({ task, agentMap, projectMap, agentActivity, onDragStart, o
         isAgentWorking
           ? "border-brand/30 shadow-glow"
           : "border-stroke hover:shadow-4",
-        animateMove && "animate-task-move",
+        isMoving && "animate-task-move",
       )}
     >
       {/* Working indicator */}
@@ -1192,48 +1410,135 @@ function WarRoomCard({ task, agentMap, projectMap, agentActivity, onDragStart, o
         {task.title}
       </p>
 
-      {/* Agent working indicator */}
-      {isAgentWorking && activity && (
-        <div className="mb-2 flex items-center gap-2 rounded-md bg-brand-light/50 px-2.5 py-1.5">
-          <span className="relative flex h-2 w-2 shrink-0">
-            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-brand opacity-75" />
-            <span className="relative inline-flex h-2 w-2 rounded-full bg-brand" />
-          </span>
-          <span className="text-[10px] font-medium text-brand truncate">
-            {activity.currentTask ?? t("agentStatus.running")}
-            {activity.currentFile ? ` · ${activity.currentFile}` : ""}
-          </span>
-        </div>
-      )}
+      {/* V2 Agent Teams progress — collapsible phases */}
+      {v2Info && <V2PhasesToggle v2Info={v2Info} />}
 
-      {/* Git branch */}
-      {task.branch && (
-        <div className="mb-2 flex items-center gap-1.5 rounded-md bg-purple-light px-2.5 py-1 max-w-full overflow-hidden">
-          <GitBranch className="h-3 w-3 text-purple-dark shrink-0" />
-          <span className="text-[10px] font-semibold text-purple-dark truncate">{task.branch}</span>
-        </div>
-      )}
-
-      {/* Footer: Agent + time + execute */}
+      {/* Footer: agent avatars (multiple for V2) + time */}
       <div className="flex items-center justify-between pt-2 border-t border-stroke">
-        {agent ? (
-          <div className="flex items-center gap-2">
-            <AgentAvatar name={agent.name} avatar={agent.avatar} color={agent.color} size="sm" className="!h-5 !w-5 !text-[8px]" />
-            <span className="text-[10px] font-semibold text-neutral-fg2 truncate max-w-[80px]">{agent.name}</span>
-          </div>
-        ) : (
-          <div className="flex items-center gap-1 text-neutral-fg-disabled">
-            <User className="h-3 w-3" />
-            <span className="text-[10px]">{t("board.unassigned")}</span>
-          </div>
-        )}
+        {(() => {
+          // V2: show avatars of all agents currently running
+          if (v2Info) {
+            const runningPhase = v2Info.phases.find((p) => p.status === "running");
+            const activeRoles = runningPhase?.agents ?? [];
+            const activeAgents = activeRoles
+              .map((role) => Array.from(agentMap.values()).find((a) => a.role === role))
+              .filter(Boolean) as Agent[];
+
+            if (activeAgents.length > 0) {
+              return (
+                <div className="flex items-center gap-1.5">
+                  <div className="flex -space-x-1.5">
+                    {activeAgents.map((a) => (
+                      <AgentAvatar key={a.id} name={a.name} avatar={a.avatar} color={a.color} size="sm" className="!h-5 !w-5 !text-[8px] ring-1 ring-neutral-bg1" />
+                    ))}
+                  </div>
+                  <span className="text-[10px] font-semibold text-neutral-fg2">
+                    {activeAgents.length === 1 ? activeAgents[0].name : `${activeAgents.length} agentes`}
+                  </span>
+                </div>
+              );
+            }
+          }
+          // V1 or no running phase: single agent
+          return agent ? (
+            <div className="flex items-center gap-2">
+              <AgentAvatar name={agent.name} avatar={agent.avatar} color={agent.color} size="sm" className="!h-5 !w-5 !text-[8px]" />
+              <span className="text-[10px] font-semibold text-neutral-fg2 truncate max-w-[80px]">{agent.name}</span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-1 text-neutral-fg-disabled">
+              <User className="h-3 w-3" />
+              <span className="text-[10px]">{t("board.unassigned")}</span>
+            </div>
+          );
+        })()}
         <div className="flex items-center gap-1 text-neutral-fg-disabled">
           <Clock className="h-2.5 w-2.5" />
-          <span className="text-[9px]">{formatRelativeTime(task.createdAt)}</span>
+          <span className="text-[9px]">
+            {task.status === "in_progress"
+              ? <LiveElapsed since={task.updatedAt ?? task.createdAt} />
+              : formatRelativeTime(task.createdAt)}
+          </span>
         </div>
       </div>
     </div>
   );
+}
+
+/** Live elapsed time counter — re-renders every 5s for in-progress tasks */
+/** Collapsible V2 phases panel inside task card */
+function V2PhasesToggle({ v2Info }: { v2Info: V2Info }) {
+  const [open, setOpen] = useState(false);
+
+  const doneCount = v2Info.phases.filter((p) => p.status === "done").length;
+  const total = v2Info.phases.length;
+
+  return (
+    <div className="mt-2 border-t border-stroke pt-2">
+      <button
+        onClick={(e) => { e.stopPropagation(); setOpen(!open); }}
+        className="flex items-center justify-between w-full group/toggle"
+      >
+        <div className="flex items-center gap-1.5">
+          <Zap className="h-3 w-3 text-warning" />
+          <span className="text-[10px] font-semibold text-warning">Agent Teams ({v2Info.complexity})</span>
+          <span className="text-[9px] text-neutral-fg3 ml-1">{doneCount}/{total}</span>
+        </div>
+        <ChevronDown className={cn("h-3 w-3 text-neutral-fg3 transition-transform", open && "rotate-180")} />
+      </button>
+
+      {open && (
+        <div className="mt-1.5 space-y-1.5 animate-fade-up max-h-[120px] overflow-y-auto scrollbar-hide overscroll-contain" onWheel={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
+          {v2Info.phases.map((phase, idx) => (
+            <div key={idx} className="space-y-1">
+              <div className="flex items-center gap-1.5">
+                <span className={cn("h-1.5 w-1.5 rounded-full",
+                  phase.status === "done" ? "bg-success" : phase.status === "running" ? "bg-warning animate-pulse" : "bg-neutral-fg-disabled"
+                )} />
+                <span className="text-[10px] text-neutral-fg3">
+                  Fase {idx + 1}{phase.parallel ? " (paralelo)" : ""}
+                </span>
+              </div>
+              {phase.status !== "pending" && phase.agents.map((role) => {
+                const ap = v2Info.agentProgress.get(role);
+                return (
+                  <div key={role} className="flex items-center gap-2 pl-3">
+                    <span className="text-[9px] text-neutral-fg3 w-20 truncate">{role}</span>
+                    <div className="flex-1 h-1 rounded-full bg-neutral-bg3 overflow-hidden">
+                      <div
+                        className={cn("h-full rounded-full transition-all duration-300",
+                          ap?.status === "done" ? "bg-success" : ap?.status === "error" ? "bg-danger" : "bg-brand"
+                        )}
+                        style={{ width: `${ap?.progress ?? 0}%` }}
+                      />
+                    </div>
+                    <span className="text-[9px] text-neutral-fg3 w-8 text-right">{ap?.progress ?? 0}%</span>
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LiveElapsed({ since }: { since: number | string | Date }) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const interval = setInterval(() => setTick((t) => t + 1), 5000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const ms = Date.now() - new Date(since).getTime();
+  if (ms < 0) return <span>agora</span>;
+  const secs = Math.floor(ms / 1000);
+  const mins = Math.floor(secs / 60);
+  const hours = Math.floor(mins / 60);
+  if (hours > 0) return <span>{hours}h {mins % 60}m</span>;
+  if (mins > 0) return <span>{mins}m {secs % 60}s</span>;
+  return <span>{secs}s</span>;
 }
 
 /* ═══ Helpers ═══ */
@@ -1249,6 +1554,8 @@ function getActivityIcon(action: string): { Icon: React.FC<{ className?: string 
     return { Icon: Eye, bgCls: "bg-purple-light", colorCls: "text-purple" };
   if (action.startsWith("tool:"))
     return { Icon: Terminal, bgCls: "bg-brand-light", colorCls: "text-brand" };
+  if (action.startsWith("agent:"))
+    return { Icon: MessageSquare, bgCls: "bg-info/10", colorCls: "text-info" };
   if (action.startsWith("task:done"))
     return { Icon: CheckCircle2, bgCls: "bg-success-light", colorCls: "text-success" };
   if (action.startsWith("task:"))

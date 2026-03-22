@@ -253,10 +253,10 @@ const VALID_TRANSITIONS: Record<string, string[]> = {
   pending: ["assigned", "cancelled"],
   assigned: ["in_progress", "cancelled"],
   in_progress: ["review", "failed", "cancelled"],
-  review: ["done", "assigned", "failed"],
-  failed: ["pending", "assigned"],
+  review: ["done", "assigned", "failed", "cancelled"],
+  failed: ["pending", "assigned", "cancelled"],
   done: [],
-  cancelled: ["pending"],
+  cancelled: ["pending", "assigned"],
 };
 
 // GET / — list tasks with optional filters
@@ -416,11 +416,25 @@ router.patch("/:id", (req, res) => {
     const taskIdForExec = req.params.id;
     const ioExec = req.app.get("io") ?? null;
     res.json({ task: updated });
-    import("../lib/task-executor.js").then(({ executeTask }) => {
-      executeTask(taskIdForExec, ioExec).catch((err: Error) => {
-        console.error(`[TaskExecutor] Auto-execute failed: ${err.message}`);
-      });
-    }).catch(() => {});
+
+    // Check execution mode: v1 (workflow) or v2 (agent teams)
+    const modeRow = db.select().from(integrations)
+      .where(eq(integrations.type, "execution_mode")).get();
+    const isV2 = modeRow?.config === "v2";
+
+    if (isV2) {
+      import("../lib/task-executor-v2.js").then(({ executeTaskV2 }) => {
+        executeTaskV2(taskIdForExec, ioExec).catch((err: Error) => {
+          console.error(`[TaskExecutorV2] Auto-execute failed: ${err.message}`);
+        });
+      }).catch(() => {});
+    } else {
+      import("../lib/task-executor.js").then(({ executeTask }) => {
+        executeTask(taskIdForExec, ioExec).catch((err: Error) => {
+          console.error(`[TaskExecutor] Auto-execute failed: ${err.message}`);
+        });
+      }).catch(() => {});
+    }
     return;
   }
 

@@ -553,6 +553,16 @@ function GitHubIntegration() {
         </span>
       </div>
 
+      {connected && (
+        <div className="mb-4 flex items-center gap-3 rounded-lg border border-success/20 bg-success-light p-4">
+          <span className="h-2 w-2 rounded-full bg-success" />
+          <div>
+            <p className="text-[13px] font-medium text-success">{t("settings.githubConnected")}</p>
+            <p className="text-[11px] text-neutral-fg3">{t("settings.githubActiveDesc", "Auto-commit e PR serão criados automaticamente ao concluir tasks.")}</p>
+          </div>
+        </div>
+      )}
+
       {!connected ? (
         <div className="flex items-center gap-2">
           <input

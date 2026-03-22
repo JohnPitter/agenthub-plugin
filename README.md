@@ -2,11 +2,11 @@
 
 # AgentHub Plugin
 
-**AI development orchestration as a Claude Code plugin — 8 agents, task execution engine, WhatsApp integration, all running locally.**
+**AI development orchestration as a Claude Code plugin — 8 agents, dual execution engines (V1 Workflow + V2 Agent Teams), WhatsApp integration, all running locally.**
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.8+-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://typescriptlang.org)
 [![Node.js](https://img.shields.io/badge/Node.js-18+-339933?style=flat-square&logo=nodedotjs&logoColor=white)](https://nodejs.org)
-[![Tests](https://img.shields.io/badge/Tests-102%20passing-22C55E?style=flat-square&logo=vitest&logoColor=white)](server/src/e2e.test.ts)
+[![Tests](https://img.shields.io/badge/Tests-149%20passing-22C55E?style=flat-square&logo=vitest&logoColor=white)](server/src/e2e.test.ts)
 [![License](https://img.shields.io/badge/License-MIT-F97316?style=flat-square)](#license)
 
 [Features](#-features) · [Architecture](#-architecture) · [Quick Start](#-quick-start) · [Tech Stack](#-tech-stack) · [API Reference](#-api-reference)
@@ -27,21 +27,22 @@ Think of it as your own **AI dev team** — available inside any Claude Code ses
 
 | Category | What you get |
 |---|---|
-| **8 AI Agents** | Architect, Tech Lead, Frontend Dev, Backend Dev, QA, Doc Writer, Team Lead, Support — pre-configured with roles and system prompts |
-| **Task Execution Engine** | Claude Agent SDK orchestrates task execution with full lifecycle management |
+| **8 AI Agents** | Architect (Opus), Tech Lead (Haiku), Frontend Dev, Backend Dev, QA (Opus), Doc Writer (Haiku), Team Lead (Haiku), Support (Opus) |
+| **V1 Workflow Engine** | Sequential pipeline with customizable workflow editor — agents follow a defined chain |
+| **V2 Agent Teams** | Parallel execution with intelligent orchestrator — Tech Lead triages, Architect plans, devs work simultaneously in isolated worktrees |
+| **Execution Mode Toggle** | Switch between V1 and V2 on the Agents page — both engines coexist |
 | **Project Management** | Import local repos, clone from GitHub, or create new projects with tech stack selection (17 technologies) |
-| **Task State Machine** | Enforced transitions with 65 validated scenarios — 16 valid, 40 invalid blocked, 8 no-op, 1 field update |
-| **GitHub Integration** | Connect via Personal Access Token for auto-commit, push, and PR creation on task completion |
-| **Agent Memories** | Persistent learnings accumulated during execution, injected into agent context |
-| **Documentation Editor** | Built-in markdown editor with auto-generated API docs (51 endpoints) |
-| **Git Dashboard** | Status, config, init, sync — all from the project settings UI |
-| **File Browser** | Browse project files and read content with path traversal protection |
-| **Claude Usage Widget** | Opus 5h rolling, Sonnet 7d, All models 7d with cache fallback |
-| **WhatsApp Integration** | Direct messaging via @wppconnect-team/wppconnect with auto-reconnect |
-| **Real-time Updates** | Socket.io WebSocket for live task progress and dashboard stats |
-| **Factory Reset** | Clean slate option in Settings — preserves agent configurations |
+| **Task State Machine** | Enforced transitions — created → assigned → in_progress → review → done (with retry, cancel, reject flows) |
+| **Monorepo Support** | Automatic detection and scaffolding of monorepo structure (root package.json, docs/, README) |
+| **GitHub Integration** | Connect via PAT for auto-commit with co-authors, push, and PR creation on task completion |
+| **Team Insights** | Shared memory system — agents discover project-specific insights during execution and share with the team |
+| **WhatsApp Integration** | Team Lead bot with audio transcription (Groq Whisper), task management, real-time status updates |
+| **Real-time Updates** | Socket.io WebSocket for live task progress, phase tracking, agent activity — persists across page refresh |
+| **Adaptive QA** | QA model scales with task complexity: Haiku (simple) → Sonnet (moderate) → Opus (complex) |
+| **Task Logs** | Persistent execution logs in `~/.agenthub-local/logs/` for troubleshooting |
 | **Auto-login** | Detects 401 token expiry and triggers `claude login` automatically |
-| **102 E2E Tests** | Comprehensive test suite covering all endpoints and state transitions |
+| **Factory Reset** | Clean slate option in Settings — preserves agent configurations |
+| **149 E2E Tests** | Comprehensive test suite: 102 V1 + 47 V2 covering all endpoints and flows |
 
 ---
 
@@ -59,14 +60,15 @@ graph TB
         SPA["React 19 SPA<br/>(Pre-built in /web/dist)"]
         DB[("SQLite<br/>Drizzle ORM")]
 
-        subgraph Execution["Task Execution"]
-            CLAUDE_SDK["Claude Agent SDK<br/>Task Orchestration"]
-            ANTHROPIC["Anthropic SDK<br/>WhatsApp Bot"]
+        subgraph Execution["Dual Execution Engines"]
+            V1["V1 Workflow<br/>Sequential Pipeline"]
+            V2["V2 Agent Teams<br/>Parallel + Orchestrator"]
+            CLAUDE_SDK["Claude Agent SDK"]
         end
 
         subgraph Services["Core Services"]
-            GIT["Git Service<br/>Commit, Push, PR"]
-            WPP["WhatsApp Service<br/>WPPConnect"]
+            GIT["Git Service<br/>Worktrees, Commit, PR"]
+            WPP["WhatsApp Service<br/>WPPConnect + Groq Whisper"]
             SCANNER["Project Scanner<br/>15+ Languages"]
         end
     end
@@ -82,17 +84,19 @@ graph TB
     EXPRESS --> Services
     SOCKET <-->|"WebSocket"| BROWSER
     EXPRESS -->|"Serves SPA"| BROWSER
+    V1 --> CLAUDE_SDK
+    V2 --> CLAUDE_SDK
     CLAUDE_SDK -->|"Executes tasks"| GIT
     GIT -->|"Push / PR"| GH
-    ANTHROPIC --> WPP
 
     style CMD fill:#F97316,color:#fff,stroke:none
     style EXPRESS fill:#10B981,color:#fff,stroke:none
     style SOCKET fill:#6366F1,color:#fff,stroke:none
     style SPA fill:#3B82F6,color:#fff,stroke:none
     style DB fill:#8B5CF6,color:#fff,stroke:none
+    style V1 fill:#F59E0B,color:#fff,stroke:none
+    style V2 fill:#F59E0B,color:#fff,stroke:none
     style CLAUDE_SDK fill:#F59E0B,color:#fff,stroke:none
-    style ANTHROPIC fill:#F59E0B,color:#fff,stroke:none
     style GIT fill:#1C1917,color:#fff,stroke:none
     style WPP fill:#22C55E,color:#fff,stroke:none
 ```
@@ -102,12 +106,44 @@ graph TB
 | Component | Role | Tech |
 |---|---|---|
 | **Plugin Command** | `/start` — launches the server and opens the dashboard | Claude Code Plugin SDK |
-| **Express Server** | REST API (51 endpoints), static SPA serving, middleware pipeline | Express 5 + Socket.io 4 |
-| **SQLite Database** | Projects, agents, tasks, messages, logs, docs, integrations | better-sqlite3 + Drizzle ORM |
-| **React Dashboard** | SPA with kanban, analytics, settings, file browser, docs editor | React 19 + Tailwind CSS 4 + Zustand |
-| **Task Execution** | Agent-driven task orchestration with tool use | Claude Agent SDK |
-| **WhatsApp Bot** | Messaging integration with QR code pairing | @wppconnect-team/wppconnect |
-| **Git Service** | Branch management, commits, push, PR creation via GitHub API | `execFile` (injection-safe) |
+| **Express Server** | REST API (55+ endpoints), static SPA serving, middleware pipeline | Express 5 + Socket.io 4 |
+| **SQLite Database** | Projects, agents, tasks, messages, logs, docs, integrations, memories | better-sqlite3 + Drizzle ORM |
+| **React Dashboard** | SPA with kanban, analytics, settings, file browser, workflow editor | React 19 + Tailwind CSS 4 + Zustand |
+| **V1 Executor** | Sequential workflow — agents follow a configurable chain | Claude Agent SDK |
+| **V2 Executor** | Agent Teams — orchestrator triages, agents work in parallel worktrees | Claude Agent SDK + Worktree Manager |
+| **Orchestrator** | Triage (Haiku) analyzes tasks, decides complexity and agent allocation | Anthropic SDK |
+| **WhatsApp Bot** | Team Lead with audio transcription, task management, real-time notifications | WPPConnect + Groq Whisper |
+| **Git Service** | Branch management, worktrees, commits, push, PR creation | `execFile` (injection-safe) |
+
+---
+
+## V2 Agent Teams Flow
+
+```
+Task assigned
+    ↓
+Triage (Tech Lead - Haiku, ~5s)
+    → Classifies: simple | moderate | complex
+    → Creates execution plan with phases
+    ↓
+Planning (Architect - Opus) [optional]
+    → Creates docs/, package.json, README
+    → Monorepo scaffolding if needed
+    ↓
+Implementation (Devs - Sonnet) [parallel]
+    → Each agent in isolated git worktree
+    → Backend Dev + Frontend Dev simultaneously
+    ↓
+Merge (automatic)
+    → Commits worktree changes
+    → Merges into task branch → main branch
+    ↓
+QA Review (adaptive model)
+    → simple: Haiku | moderate: Sonnet | complex: Opus
+    → Approves or rejects with feedback
+    ↓
+Done → Auto-commit with co-authors + PR
+```
 
 ---
 
@@ -142,11 +178,13 @@ That's it. The plugin starts a local Express server, seeds 8 AI agents into SQLi
 |:---:|:---:|
 | **Server** | Express 5, Socket.io 4, Node.js 18+ |
 | **Database** | SQLite via better-sqlite3 + Drizzle ORM |
-| **Frontend** | React 19, Vite, Tailwind CSS 4, Zustand (pre-built in `server/web/dist`) |
+| **Frontend** | React 19, Vite, Tailwind CSS 4, Zustand |
 | **AI — Tasks** | Claude Agent SDK for autonomous task execution |
-| **AI — WhatsApp** | Anthropic SDK for conversational bot |
+| **AI — Triage** | Anthropic SDK for orchestrator (Haiku) |
+| **AI — WhatsApp** | Anthropic SDK for conversational bot (Haiku) |
+| **Audio** | Groq Whisper for WhatsApp audio transcription |
 | **WhatsApp** | @wppconnect-team/wppconnect with auto-reconnect |
-| **Tests** | Vitest — 102 E2E tests |
+| **Tests** | Vitest — 149 E2E tests (102 V1 + 47 V2) |
 | **Security** | `execFile` only, parameterized queries, path traversal protection |
 
 </div>
@@ -157,16 +195,16 @@ That's it. The plugin starts a local Express server, seeds 8 AI agents into SQLi
 
 <div align="center">
 
-| Agent | Role | Model | Thinking Tokens |
-|:---:|:---:|:---:|:---:|
-| **Architect** | `architect` | Claude Opus 4.6 | 32K |
-| **Tech Lead** | `tech_lead` | Claude Sonnet 4.6 | 16K |
-| **Frontend Dev** | `frontend_dev` | Claude Sonnet 4.6 | — |
-| **Backend Dev** | `backend_dev` | Claude Sonnet 4.6 | — |
-| **QA Engineer** | `qa` | Claude Sonnet 4.6 | — |
-| **Doc Writer** | `doc_writer` | Claude Sonnet 4.6 | — |
-| **Team Lead** | `receptionist` | Claude Haiku 4.5 | — |
-| **Support** | `support` | Claude Opus 4.6 | 65K |
+| Agent | Role | Model | Purpose |
+|:---:|:---:|:---:|:---|
+| **Architect** | `architect` | Opus | Plans architecture, creates docs, scaffolds monorepo |
+| **Tech Lead** | `tech_lead` | Haiku | Triages tasks, coordinates workflow (V1), fast analysis |
+| **Frontend Dev** | `frontend_dev` | Sonnet | Implements UI components, pages, styling |
+| **Backend Dev** | `backend_dev` | Sonnet | Implements API, database, server logic |
+| **QA Engineer** | `qa` | Opus | Reviews code quality, validates features |
+| **Doc Writer** | `doc_writer` | Haiku | Generates docs, README, API reference — writes files |
+| **Team Lead** | `receptionist` | Haiku | WhatsApp bot, task coordination |
+| **Support** | `support` | Opus | Critical infrastructure, DevOps, escalation |
 
 </div>
 
@@ -177,8 +215,7 @@ That's it. The plugin starts a local Express server, seeds 8 AI agents into SQLi
 ```mermaid
 stateDiagram-v2
     [*] --> created
-    created --> pending
-    pending --> assigned
+    created --> assigned
     assigned --> in_progress
     in_progress --> review
     review --> done
@@ -186,32 +223,11 @@ stateDiagram-v2
 
     review --> assigned : QA rejected
     in_progress --> failed : Error
-    failed --> pending : Retry
-    failed --> assigned : Reassign
-    in_progress --> cancelled : Cancel
-    assigned --> cancelled : Cancel
-    cancelled --> pending : Recover
+    failed --> assigned : Retry
+    review --> cancelled : Cancel
+    failed --> cancelled : Cancel
+    cancelled --> assigned : Reactivate
 ```
-
-**65 transition scenarios validated** — 16 valid transitions, 40 invalid transitions blocked, 8 no-op transitions handled gracefully, 1 field update on `done` status.
-
----
-
-## API Reference
-
-51 endpoints organized by domain:
-
-| Group | Endpoints | Description |
-|---|:---:|---|
-| **Projects** | 7 | CRUD, import, create with tech stack, disk deletion, GitHub repos |
-| **Tasks** | 6 | CRUD, status transitions (enforced state machine), audit logs, execution |
-| **Agents** | 5 | CRUD, context with memories, memory management |
-| **Docs** | 5 | Documentation CRUD, auto-generated API reference |
-| **Git** | 6 | Status, init, sync, config, branch operations, GitHub integration |
-| **Files** | 2 | File tree browsing, content reader with path validation |
-| **System** | 6 | Health check, Claude usage, Claude token status, scanner, factory reset, settings |
-| **Integrations** | 8 | WhatsApp connect/disconnect/status/send, Telegram config, GitHub PAT |
-| **Analytics** | 6 | Dashboard stats, task trends, agent performance, cost tracking |
 
 ---
 
@@ -221,11 +237,13 @@ All data is stored locally — nothing leaves your machine.
 
 | Item | Path |
 |---|---|
-| SQLite Database | `~/.agenthub-local/db.sqlite` |
+| SQLite Database | `~/.agenthub-local/local.db` |
 | Server Port | `~/.agenthub-local/port` |
-| Server Logs | `~/.agenthub-local/server.log` |
+| Workflow Config | `~/.agenthub-local/workflow.json` |
+| Execution Logs | `~/.agenthub-local/logs/task-*.log` |
 | WhatsApp Tokens | `~/.agenthub-local/whatsapp-tokens/` |
 | Created Projects | `~/Projects/` |
+| Task Workspaces | `~/Projects/.agenthub-tasks/` |
 
 ---
 
@@ -234,23 +252,16 @@ All data is stored locally — nothing leaves your machine.
 ```bash
 # Clone the repository
 git clone https://github.com/JohnPitter/agenthub-plugin.git
-cd agenthub-plugin/server
+cd agenthub-plugin
 
-# Install dependencies
-npm install
+# Server
+cd server && npm install && npm run dev
 
-# Start the development server
-npm run dev
-
-# The dashboard opens at http://localhost:<port>
-# Port is dynamically assigned and saved to ~/.agenthub-local/port
+# Frontend (separate terminal)
+cd web && npm install && npm run dev
 ```
 
-The frontend is pre-built in `server/web/dist/`. To rebuild it, use the AgentHub web project with `VITE_LOCAL_MODE=true`.
-
----
-
-## Testing
+### Testing
 
 ```bash
 cd server
@@ -258,29 +269,12 @@ cd server
 # Start the server first (tests run against the live server)
 npm run dev
 
-# Run the full test suite
-npm test
+# Run V1 tests
+DISABLE_AUTO_EXECUTE=1 npx vitest run src/e2e.test.ts
+
+# Run V2 tests
+DISABLE_AUTO_EXECUTE=1 npx vitest run src/e2e-v2.test.ts
 ```
-
-**102 E2E tests** covering:
-- All 51 API endpoints (CRUD operations, error handling, edge cases)
-- Task state machine (65 transition scenarios)
-- Project lifecycle (create, import, delete with disk cleanup)
-- Agent management (default seeding, custom agents, memories)
-- Git operations (init, status, sync)
-- System endpoints (health, usage, factory reset)
-
----
-
-## CI/CD
-
-Three GitHub Actions workflows:
-
-| Workflow | Trigger | What it does |
-|---|---|---|
-| **CI** | Push / PR | Install, build, run 102 E2E tests |
-| **Release** | Tag push | Build, test, create GitHub Release |
-| **Security** | Schedule / PR | `npm audit`, dependency vulnerability scan |
 
 ---
 
@@ -289,62 +283,46 @@ Three GitHub Actions workflows:
 ```
 agenthub-plugin/
 ├── plugins/agenthub/
-│   ├── commands/start.md              # /start slash command definition
-│   ├── skills/agenthub-context.md     # Context skill for AI assistance
-│   └── README.md                      # Plugin marketplace description
+│   ├── commands/start.md              # /start slash command
+│   └── skills/agenthub-context.md     # Context skill
 ├── server/
 │   ├── src/
-│   │   ├── index.ts                   # Express 5 server + Socket.io setup
-│   │   ├── db.ts                      # SQLite schema + Drizzle ORM + migrations
-│   │   ├── seed.ts                    # 8 default agents with system prompts
-│   │   ├── e2e.test.ts                # 102 E2E tests (Vitest)
+│   │   ├── index.ts                   # Express 5 + Socket.io server
+│   │   ├── db.ts                      # SQLite schema + Drizzle ORM
+│   │   ├── seed.ts                    # 8 default agents + workflow seeding
+│   │   ├── e2e.test.ts                # 102 V1 E2E tests
+│   │   ├── e2e-v2.test.ts             # 47 V2 E2E tests
 │   │   ├── routes/
+│   │   │   ├── tasks.ts               # Task CRUD + state machine + V1/V2 switch
 │   │   │   ├── projects.ts            # Project CRUD + disk deletion
-│   │   │   ├── tasks.ts               # Task CRUD + state machine
 │   │   │   ├── agents.ts              # Agent CRUD + memories
 │   │   │   ├── files.ts               # File tree + content reader
-│   │   │   └── integrations.ts        # WhatsApp / Telegram endpoints
+│   │   │   └── integrations.ts        # WhatsApp / GitHub / Groq endpoints
 │   │   └── lib/
-│   │       ├── claude-token.ts        # Reads ~/.claude/.credentials.json
-│   │       ├── scanner.ts             # Local project detection (15+ languages)
-│   │       └── whatsapp-service.ts    # WPPConnect WhatsApp client
-│   ├── web/dist/                      # Pre-built React 19 SPA
-│   ├── package.json
-│   └── tsconfig.json
-├── .github/workflows/                 # CI, Release, Security workflows
+│   │       ├── task-executor.ts       # V1 sequential workflow engine
+│   │       ├── task-executor-v2.ts    # V2 Agent Teams engine
+│   │       ├── orchestrator.ts        # Triage + merge review + QA routing
+│   │       ├── worktree-manager.ts    # Git worktree isolation
+│   │       ├── execution-state.ts     # Server-side state persistence
+│   │       ├── task-logger.ts         # Persistent file logging
+│   │       ├── whatsapp-service.ts    # WPPConnect + Groq Whisper
+│   │       └── scanner.ts            # Local project detection
+│   └── web/dist/                      # Pre-built React SPA
+├── web/                               # Frontend source (React + Vite)
+│   ├── src/
+│   │   ├── routes/                    # Pages: tasks, agents, projects, settings
+│   │   ├── components/                # UI components
+│   │   ├── stores/                    # Zustand state management
+│   │   └── shared/                    # Shared types + events
+├── docs/plans/                        # Architecture & design documents
+├── .github/workflows/                 # CI, Release, Security
 └── README.md
 ```
 
 ---
 
-## Contributing
-
-Contributions are welcome! Please follow these guidelines:
-
-1. **Fork** the repository and create a feature branch
-2. **Follow** the existing code style — TypeScript strict mode, 2-space indentation
-3. **Test** your changes — ensure all 102 E2E tests pass (`npm test`)
-4. **Build** successfully — `npm run build` must complete without errors
-5. **Submit** a pull request with a clear description of the changes
-
-### Development Principles
-
-- Routes delegate to services — no business logic in route handlers
-- All database queries use Drizzle ORM parameterized queries
-- Git operations use `execFile` (never `exec`) with args as arrays
-- File operations validate paths against traversal attacks
-- Every state transition is validated by the task state machine
-
----
-
 ## License
 
-MIT — see [LICENSE](LICENSE) for details.
-
----
-
-<div align="center">
-
-**Built with TypeScript and Claude by [@JohnPitter](https://github.com/JohnPitter)**
+MIT
 
 </div>

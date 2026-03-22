@@ -1,5 +1,8 @@
-import { db, agents } from "./db.js";
+import { db, agents, DATA_DIR } from "./db.js";
+import { eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
+import { existsSync, readFileSync, writeFileSync } from "fs";
+import { join } from "path";
 
 interface AgentBlueprint {
   name: string;
@@ -31,17 +34,47 @@ const DEFAULT_AGENTS: AgentBlueprint[] = [
     systemPrompt: `You are the Architect, a senior software architect.
 
 ## Your Role
-When you receive a task, your job is to ANALYZE and CREATE A PLAN — NOT to implement it.
+When you receive a task, your job is to:
+1. ANALYZE the project structure and existing code
+2. CREATE A PLAN for the dev agents to follow
+3. SCAFFOLD the project structure — create root configs, docs, and monorepo setup
 
-Your output must be a structured plan with:
+You DO write files: docs, configs, READMEs, and project scaffolding. You do NOT implement features.
+
+Your plan output must include:
 1. Summary — What needs to be done (1-2 sentences)
 2. Architecture decisions — Technology choices, patterns, trade-offs
-3. Implementation steps — Numbered list of concrete steps
+3. Implementation steps — Numbered list of concrete steps for devs
 4. Files to create/modify — Exact file paths and what changes in each
-5. Recommended agent — Who should implement this (frontend_dev, backend_dev, or both)
-6. Risks & edge cases — Potential issues to watch for
+5. Risks & edge cases — Potential issues to watch for
 
-Be specific and actionable — the dev who receives this plan should be able to implement it without asking questions.`,
+## MUST CREATE these files (use Write tool):
+
+### 1. docs/architecture-plan.md
+ALWAYS create \`docs/\` folder and write the plan there. Include diagrams, data models, API contracts.
+
+### 2. Root package.json (monorepo only)
+If the project has BOTH \`backend/\` and \`frontend/\` directories:
+- CREATE \`package.json\` at the project root:
+\`\`\`json
+{
+  "name": "project-name",
+  "private": true,
+  "workspaces": ["backend", "frontend"],
+  "scripts": {
+    "dev": "concurrently \\"npm run dev --workspace=backend\\" \\"npm run dev --workspace=frontend\\"",
+    "install:all": "npm install --workspaces"
+  }
+}
+\`\`\`
+
+### 3. Root README.md
+CREATE a README explaining the project structure, how to install, and how to run.
+
+### 4. .gitignore (if missing)
+CREATE with node_modules, dist, .env, etc.
+
+ALWAYS create \`docs/\` folder and write \`docs/architecture-plan.md\` with your plan.`,
     soul: `# Soul: Architect
 
 ## Personality
@@ -56,8 +89,8 @@ You are methodical, analytical, and deeply thoughtful. You approach every proble
   {
     name: "Tech Lead",
     role: "tech_lead",
-    model: "claude-sonnet-4-6",
-    maxThinkingTokens: 16000,
+    model: "claude-haiku-4-5-20251001",
+    maxThinkingTokens: null,
     description: "Senior tech lead — coordinates development team, manages project flow, assigns and reviews tasks. Thinking mode active.",
     allowedTools: ["Read", "Glob", "Grep", "Bash", "Write", "Edit", "Task", "WebSearch", "WebFetch"],
     permissionMode: "acceptEdits",
@@ -160,7 +193,7 @@ You are security-first, thorough, and robustness-obsessed. You assume every inpu
   {
     name: "QA Engineer",
     role: "qa",
-    model: "claude-sonnet-4-6",
+    model: "claude-opus-4-6",
     maxThinkingTokens: null,
     description: "Senior QA engineer — writes unit/integration/e2e tests, validates features, reviews code quality.",
     allowedTools: ["Read", "Glob", "Grep", "Bash", "Write", "Edit"],
@@ -193,24 +226,39 @@ You are an investigator — skeptical, curious, and relentless. You actively try
   {
     name: "Doc Writer",
     role: "doc_writer",
-    model: "claude-sonnet-4-6",
+    model: "claude-haiku-4-5-20251001",
     maxThinkingTokens: null,
     description: "Documentation specialist — generates API docs, produces task change summaries, maintains project documentation.",
-    allowedTools: ["Read", "Glob", "Grep"],
-    permissionMode: "default",
+    allowedTools: ["Read", "Glob", "Grep", "Write", "Edit", "Bash"],
+    permissionMode: "acceptEdits",
     level: "pleno",
     color: "#8B5CF6",
     avatar: "bottts:doc-writer",
     systemPrompt: `You are the Doc Writer, a documentation specialist.
 
 ## Your Role
-You generate and maintain project documentation through static code analysis.
+You generate and maintain project documentation by analyzing code and WRITING documentation files.
 
 Your responsibilities:
 - Parse route files to extract API endpoint definitions
 - Generate structured API documentation from source code
 - Produce task change summaries from task logs and git history
 - Keep documentation accurate and up-to-date with the codebase
+- Create docs/ folder with architecture plans, API docs, setup guides
+
+## CRITICAL: You MUST write files
+- Use the Write tool to create documentation files in the project
+- Create \`docs/\` directory if it doesn't exist
+- Write \`README.md\` at project root if missing
+- Write \`docs/API.md\`, \`docs/ARCHITECTURE.md\`, \`docs/SETUP.md\` as needed
+- NEVER just output documentation as text — always WRITE it to files
+
+## Monorepo Setup
+If the project has multiple apps (backend/, frontend/, apps/):
+- Ensure root \`package.json\` exists with workspaces config
+- Ensure root \`README.md\` explains the monorepo structure
+- Each app should have its own README
+- Create \`docs/SETUP.md\` with steps to run the full monorepo
 
 You are precise and thorough. Every endpoint, parameter, and description must match the actual code.`,
     soul: `# Soul: Doc Writer
@@ -383,5 +431,117 @@ export function seedAgents(): void {
     if (added === 0) {
       console.log(`All ${DEFAULT_AGENTS.length} default agents already exist.`);
     }
+
+    // Sync models, tools, and prompts for existing default agents
+    for (const agent of DEFAULT_AGENTS) {
+      const existing = db.select().from(agents).all().find((a) => a.role === agent.role && a.isDefault);
+      if (!existing) continue;
+      const updates: Record<string, unknown> = {};
+      if (existing.model !== agent.model) { updates.model = agent.model; updates.maxThinkingTokens = agent.maxThinkingTokens; }
+      if (existing.allowedTools !== JSON.stringify(agent.allowedTools)) { updates.allowedTools = JSON.stringify(agent.allowedTools); }
+      if (existing.permissionMode !== agent.permissionMode) { updates.permissionMode = agent.permissionMode; }
+      if (existing.systemPrompt !== agent.systemPrompt) { updates.systemPrompt = agent.systemPrompt; }
+      if (Object.keys(updates).length > 0) {
+        updates.updatedAt = now;
+        db.update(agents).set(updates).where(eq(agents.id, existing.id)).run();
+        console.log(`Updated ${agent.name}: ${Object.keys(updates).filter(k => k !== "updatedAt").join(", ")}`);
+      }
+    }
   }
+
+  // Seed default workflow if none exists or if existing has stale agent IDs
+  seedDefaultWorkflow();
+}
+
+/** Create/update default workflow with real agent IDs from the database */
+function seedDefaultWorkflow(): void {
+  const WORKFLOW_FILE = join(DATA_DIR, "workflow.json");
+
+  // Read existing workflows
+  let workflows: Record<string, unknown>[] = [];
+  try {
+    if (existsSync(WORKFLOW_FILE)) {
+      const raw = readFileSync(WORKFLOW_FILE, "utf-8");
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) workflows = parsed;
+    }
+  } catch { /* ignore */ }
+
+  // Get real agent IDs from database
+  const allAgents = db.select().from(agents).all();
+  const byRole = (role: string) => allAgents.find((a) => a.role === role);
+
+  const techLead = byRole("tech_lead");
+  const frontendDev = byRole("frontend_dev");
+  const backendDev = byRole("backend_dev");
+  const qa = byRole("qa");
+
+  if (!techLead || !qa) {
+    console.log("[Seed] Cannot create default workflow — missing tech_lead or qa agent");
+    return;
+  }
+
+  // Check if existing default workflow has valid agent IDs
+  const defaultWf = workflows.find((w) => (w as { isDefault?: boolean }).isDefault) ?? workflows[0];
+  if (defaultWf) {
+    const steps = (defaultWf as { steps?: { agentId: string }[] }).steps ?? [];
+    const agentIds = new Set(allAgents.map((a) => a.id));
+    const hasValidSteps = steps.length >= 2 && steps.every((s) => agentIds.has(s.agentId));
+    if (hasValidSteps) {
+      console.log("[Seed] Default workflow has valid agent IDs — skipping seed");
+      return;
+    }
+    console.log("[Seed] Default workflow has stale/invalid agent IDs — replacing");
+  }
+
+  // Build the default workflow: Tech Lead → Dev(s) → QA → Done
+  const devAgent = backendDev ?? frontendDev;
+  const steps: { id: string; agentId: string; label: string; nextSteps: string[]; nextStepLabels: string[] }[] = [];
+
+  const sEntry = nanoid(8);
+  const sDev = nanoid(8);
+  const sQa = nanoid(8);
+
+  steps.push({
+    id: sEntry,
+    agentId: techLead.id,
+    label: techLead.name,
+    nextSteps: [sDev],
+    nextStepLabels: ["Dev"],
+  });
+
+  if (devAgent) {
+    steps.push({
+      id: sDev,
+      agentId: devAgent.id,
+      label: devAgent.name,
+      nextSteps: [sQa],
+      nextStepLabels: ["QA"],
+    });
+  }
+
+  steps.push({
+    id: sQa,
+    agentId: qa.id,
+    label: qa.name,
+    nextSteps: [],
+    nextStepLabels: [],
+  });
+
+  const newWorkflow = {
+    id: nanoid(),
+    name: "Default Workflow",
+    description: "Tech Lead → Dev → QA → Done",
+    entryStepId: sEntry,
+    steps,
+    isDefault: true,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  // Replace all workflows with the new default (or add if empty)
+  const otherWorkflows = workflows.filter((w) => !(w as { isDefault?: boolean }).isDefault);
+  const finalWorkflows = [newWorkflow, ...otherWorkflows];
+  writeFileSync(WORKFLOW_FILE, JSON.stringify(finalWorkflows, null, 2), "utf-8");
+  console.log(`[Seed] Created default workflow: ${steps.map((s) => s.label).join(" → ")} → Done`);
 }

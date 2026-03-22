@@ -23,6 +23,7 @@ interface ChatState {
   addMessages: (messages: Message[], prepend?: boolean) => void;
   setStreamingAgent: (agentId: string, isStreaming: boolean) => void;
   updateAgentActivity: (agentId: string, update: Partial<AgentActivityInfo>) => void;
+  clearAgentActivity: () => void;
   setLoadingMessages: (loading: boolean) => void;
   setHasMoreMessages: (hasMore: boolean) => void;
   clearMessages: () => void;
@@ -89,6 +90,11 @@ export const useChatStore = create<ChatState>((set) => ({
       saveActivityToStorage(next);
       return { agentActivity: next };
     }),
+
+  clearAgentActivity: () => {
+    saveActivityToStorage(new Map());
+    set({ agentActivity: new Map() });
+  },
 
   setLoadingMessages: (loading) => set({ isLoadingMessages: loading }),
   setHasMoreMessages: (hasMore) => set({ hasMoreMessages: hasMore }),
