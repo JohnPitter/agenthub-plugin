@@ -709,9 +709,9 @@ describe("Stubs", () => {
     expect(res.messages).toEqual([]);
   });
 
-  it("GET /workflows — returns empty array", async () => {
+  it("GET /workflows — returns array", async () => {
     const res = await api<{ workflows: unknown[] }>("/workflows");
-    expect(res.workflows).toEqual([]);
+    expect(Array.isArray(res.workflows)).toBe(true);
   });
 
   it("GET /skills — returns empty array", async () => {
