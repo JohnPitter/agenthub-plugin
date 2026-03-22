@@ -117,7 +117,31 @@ graph TB
 
 ---
 
-## V2 Agent Teams Flow
+## Execution Engines
+
+### V1 — Workflow (Sequential Pipeline)
+
+```
+Task assigned
+    ↓
+Tech Lead (entry point)
+    → Analyzes task, delegates to dev
+    ↓
+Dev Agent (Backend or Frontend)
+    → Implements the feature
+    → Works on task branch (git) or tmp folder (local)
+    ↓
+QA Engineer (auto-triggered by workflow)
+    → Reviews code, checks quality
+    → QA_APPROVED → done
+    → QA_REJECTED → back to dev (with feedback)
+    ↓
+Done → Auto-commit + merge to main + PR
+```
+
+The workflow is **configurable** — edit the agent chain in the visual Workflow Editor on the Agents page.
+
+### V2 — Agent Teams (Parallel Orchestration)
 
 ```
 Task assigned
