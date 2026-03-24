@@ -86,7 +86,12 @@ export const useChatStore = create<ChatState>((set) => ({
     set((state) => {
       const next = new Map(state.agentActivity);
       const current = next.get(agentId) ?? { status: "idle" as const, lastActivity: Date.now(), progress: 0 };
-      next.set(agentId, { ...current, ...update });
+      const updated = { ...current, ...update };
+      // Skip update if nothing changed (avoid unnecessary re-renders + storage writes)
+      if (current.status === updated.status && current.progress === updated.progress && current.currentTask === updated.currentTask && current.currentFile === updated.currentFile) {
+        return state;
+      }
+      next.set(agentId, updated);
       saveActivityToStorage(next);
       return { agentActivity: next };
     }),

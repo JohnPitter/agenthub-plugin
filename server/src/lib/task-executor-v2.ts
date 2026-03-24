@@ -1,4 +1,4 @@
-import { query, type Options, type SDKResultMessage, type SDKAssistantMessage, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import { query, type Options, type SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
 import { nanoid } from "nanoid";
 import { execFileSync } from "child_process";
 import { db, schema } from "../db.js";
@@ -7,14 +7,11 @@ import { triage, reviewMerge, routeQa, type TriageResult } from "./orchestrator.
 import { createWorkspace, mergeWorkspaces, cleanupWorkspaces, isGitProject } from "./worktree-manager.js";
 import { updateAgentState, clearAgentState, setV2TaskState, updateV2PhaseStatus, updateV2AgentProgress, clearV2TaskState } from "./execution-state.js";
 import { taskLog, taskError } from "./task-logger.js";
+import { type ExecutionIO, parseSdkTools, parseStack, buildMemoriesPrompt, buildPrompt, handleMessage, extractAndSaveMemories } from "./executor-shared.js";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-interface ExecutionIO {
-  emit: (event: string, data: unknown) => void;
-}
 
 interface AgentResult {
   agentRole: string;
@@ -368,19 +365,11 @@ async function executeAgent(
   }
 
   // Build system prompt with shared memories (all agents)
-  const memories = db.select().from(schema.agentMemories).all();
   let systemPrompt = agent.systemPrompt;
   if (agent.soul) systemPrompt += `\n\n${agent.soul}`;
-  if (memories.length > 0) {
-    const memLines = memories.slice(-30).map((m) => {
-      const author = m.agentId ? (db.select().from(schema.agents).where(eq(schema.agents.id, m.agentId)).get()?.name ?? "unknown") : "system";
-      return `- [${m.type}] (by ${author}) ${m.content}`;
-    }).join("\n");
-    systemPrompt += `\n\n## Team Insights (shared memories from all agents)\n${memLines}`;
-  }
+  systemPrompt += buildMemoriesPrompt();
   // Parse project stack
-  let stackArr: string[] = [];
-  try { stackArr = project.stack ? JSON.parse(project.stack) : []; } catch { /* ignore */ }
+  const stackArr = parseStack(project.stack);
   const stackLabel = stackArr.length > 0 ? stackArr.join(", ") : "not specified";
 
   systemPrompt += `\n\n## Current Task\n- Title: ${task.title}\n- Description: ${task.description || "N/A"}\n- Priority: ${task.priority}\n- Project: ${project.name} (${workDir})\n- Stack/Technologies: ${stackLabel}`;
@@ -423,9 +412,7 @@ IMPORTANT: The project directory already contains work from the previous attempt
   systemPrompt += `\n\nComplete your part of this task using the available tools. Your workspace is isolated at: ${workDir}`;
 
   // SDK options
-  const allowedTools: string[] = agent.allowedTools ? JSON.parse(agent.allowedTools) : [];
-  const SDK_TOOL_NAMES = ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "WebSearch", "WebFetch"];
-  const sdkTools = allowedTools.filter((t) => SDK_TOOL_NAMES.includes(t));
+  const sdkTools = parseSdkTools(agent.allowedTools);
   const permissionMode = (agent.permissionMode as Options["permissionMode"]) || "acceptEdits";
   const isBypass = permissionMode === "bypassPermissions";
 
@@ -579,9 +566,7 @@ At the END of your review, output one of:
 - QA_APPROVED — if the work is acceptable
 - QA_REJECTED: <reason> — if changes are needed (specify which agent should fix what)`;
 
-  const allowedTools: string[] = qaAgent.allowedTools ? JSON.parse(qaAgent.allowedTools) : [];
-  const SDK_TOOL_NAMES = ["Read", "Glob", "Grep", "Bash", "Write", "Edit"];
-  const sdkTools = allowedTools.filter((t) => SDK_TOOL_NAMES.includes(t));
+  const sdkTools = parseSdkTools(qaAgent.allowedTools);
 
   const options: Options = {
     cwd: project.path,
@@ -656,85 +641,3 @@ function resolveAgents(roles: string[]): { id: string; name: string; role: strin
   return result;
 }
 
-function buildPrompt(
-  task: { title: string; description: string | null },
-  project: { path: string },
-): string {
-  return [
-    "Execute this task:",
-    "",
-    `Title: ${task.title}`,
-    `Description: ${task.description || "No description"}`,
-    "",
-    `Project directory: ${project.path}`,
-    "",
-    "IMPORTANT STRUCTURAL RULES:",
-    "- If the task requires BOTH frontend and backend, use a monorepo structure:",
-    "  apps/web/ for frontend, apps/server/ for backend, packages/shared/ for shared types",
-    "- Initialize with proper tooling (package.json with workspaces, tsconfig references)",
-    "- If the project already has a structure, follow it — do NOT reorganize",
-    "",
-    "Use the available tools to complete the task. When done, summarize what you did.",
-    "",
-    "At the END of your response, include a MEMORY section with insights you discovered during this task.",
-    "These insights are shared with ALL agents on the team — write things that would help others.",
-    "Format exactly like this (one per line):",
-    "",
-    "MEMORY_START",
-    "[insight] This project uses PostgreSQL with Prisma ORM, connection string in .env",
-    "[discovery] The auth system uses JWT stored in httpOnly cookies, not localStorage",
-    "[warning] The /api/users endpoint has no rate limiting — needs fixing",
-    "[pattern] All React components follow: feature-name/index.tsx + feature-name.styles.ts",
-    "[dependency] Project depends on sharp for image processing — requires native build",
-    "MEMORY_END",
-    "",
-    "Focus on project-specific insights: architecture decisions, hidden dependencies,",
-    "non-obvious configurations, gotchas, patterns. Skip generic programming knowledge.",
-  ].join("\n");
-}
-
-/** Extract learnings from agent result and save to agentMemories table */
-function extractAndSaveMemories(agentId: string, taskId: string, resultText: string): void {
-  const match = resultText.match(/MEMORY_START\n([\s\S]*?)MEMORY_END/);
-  if (!match) return;
-
-  const lines = match[1].trim().split("\n").filter((l) => l.trim().startsWith("["));
-  for (const line of lines) {
-    const typeMatch = line.match(/^\[(\w+)\]\s*(.+)/);
-    if (!typeMatch) continue;
-
-    const type = typeMatch[1];
-    const content = typeMatch[2].trim();
-    if (!content || content.length < 10) continue;
-
-    const existing = db.select().from(schema.agentMemories)
-      .where(eq(schema.agentMemories.agentId, agentId)).all();
-    if (existing.some((m) => m.content === content)) continue;
-
-    db.insert(schema.agentMemories).values({
-      id: nanoid(), agentId, taskId, type, content, source: "auto", createdAt: Date.now(),
-    }).run();
-    taskLog(taskId, "V2", `Saved memory for agent ${agentId}: [${type}] ${content.slice(0, 60)}`);
-  }
-}
-
-function handleMessage(
-  message: SDKMessage,
-  agentId: string,
-  taskId: string,
-  projectId: string,
-  io: ExecutionIO,
-): void {
-  if (message.type === "assistant") {
-    const assistantMsg = message as SDKAssistantMessage;
-    for (const block of assistantMsg.message.content) {
-      if (block.type === "text") {
-        io.emit("agent:message", { agentId, taskId, content: block.text.slice(0, 500) });
-        db.insert(schema.messages).values({
-          id: nanoid(), projectId, taskId, agentId,
-          role: "assistant", content: block.text.slice(0, 2000), createdAt: Date.now(),
-        }).run();
-      }
-    }
-  }
-}
